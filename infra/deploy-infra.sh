@@ -1,0 +1,1350 @@
+#!/bin/sh
+##########################################################################################################################################################################################
+#- Purpose: Script used to install pre-requisites, deploy/undeploy service, start/stop service, test service
+#- Parameters are:
+#- [-a] ACTION - value: azure-login, deploy-public-vpn, deploy-private-vpn, configure-private-vpn,remove-public-vpn, remove-private-vpn
+#- [-e] environment - "dev", "stag", "preprod", "prod"
+#- [-c] Sets the configuration file
+#- [-t] Sets deployment Azure Tenant Id
+#- [-s] Sets deployment Azure Subcription Id
+#- [-r] Sets the Azure Region for the deployment#
+# if [ -z "$BASH_VERSION" ]
+# then
+#    echo Force bash
+#    exec bash "$0" "$@"
+# fi
+# executable
+###########################################################################################################################################################################################
+set -u
+# echo  "$0" "$@"
+BASH_SCRIPT=$(readlink -f "$0")
+# Get the directory where the bash script is located
+SCRIPTS_DIRECTORY=$(dirname "$BASH_SCRIPT")
+
+
+
+##############################################################################
+# colors for formatting the output
+##############################################################################
+# shellcheck disable=SC2034
+{
+YELLOW='\033[1;33m'
+GREEN='\033[1;32m'
+RED='\033[0;31m'
+BLUE='\033[1;34m'
+NC='\033[0m' # No Color
+}
+##############################################################################
+#- function used to check whether an error occurred
+##############################################################################
+checkError() {
+    # shellcheck disable=SC2181
+    if [ $? -ne 0 ]; then
+        echo "${RED}"
+        echo "An error occurred exiting from the current bash${NC}"
+        exit 1
+    fi
+}
+##############################################################################
+#- print functions
+##############################################################################
+printMessage(){
+    echo "${GREEN}$1${NC}"
+}
+printWarning(){
+    echo "${YELLOW}$1${NC}"
+}
+printError(){
+    echo "${RED}$1${NC}"
+}
+printProgress(){
+    echo "${BLUE}$1${NC}"
+}
+#######################################################
+#- used to print out script usage
+#######################################################
+usage() {
+    echo
+    echo "Arguments:"
+    printf " -a  Sets deploy-infra ACTION { azure-login, deploy-public-vpn, deploy-private-vpn, configure-private-vpn,remove-public-vpn, remove-private-vpn }\n"
+    printf " -e  Sets the environment - by default 'dev' ('dev', 'test', 'stag', 'prep', 'prod')\n"
+    printf " -s  Sets subscription id \n"
+    printf " -t  Sets tenant id\n"
+    printf " -c  Sets the configuration file\n"
+    printf " -r  Sets the Azure Region for the deployment\n"
+    echo
+    echo "Example:"
+    printf " bash ./deploy-infra.sh -a deploy-public-vpn \n"
+}
+##############################################################################
+#- readConfigurationFile: Update configuration file
+#  arg 1: Configuration file path
+##############################################################################
+readConfigurationFile(){
+    file="$1"
+
+    set -o allexport
+    # shellcheck disable=SC1090
+    . "$file"
+    set +o allexport
+}
+##############################################################################
+#- readConfigurationFileValue: Read one value in  configuration file
+#  arg 1: Configuration file path
+#  arg 2: Variable Name
+##############################################################################
+readConfigurationFileValue(){
+    configFile="$1"
+    variable="$2"
+
+    grep "${variable}=*"  < "${configFile}" | head -n 1 | sed "s/${variable}=//g"
+}
+##############################################################################
+#- updateConfigurationFile: Update configuration file
+#  arg 1: Configuration file path
+#  arg 2: Variable Name
+#  arg 3: Value
+##############################################################################
+updateConfigurationFile(){
+    configFile="$1"
+    variable="$2"
+    value="$3"
+
+    count=$(grep "${variable}=.*" -c < "$configFile") || true
+    if [ "${count}" != 0 ]; then
+        ESCAPED_REPLACE=$(printf '%s\n' "${value}" | sed -e 's/[\/&]/\\&/g')
+        sed -i "s/${variable}=.*/${variable}=${ESCAPED_REPLACE}/g" "${configFile}"  2>/dev/null
+    elif [ "${count}" = 0 ]; then
+        # shellcheck disable=SC2046
+        if [ $(tail -c1 "${configFile}" | wc -l) -eq 0 ]; then
+            echo "" >> "${configFile}"
+        fi
+        echo "${variable}=${value}" >> "${configFile}"
+    fi
+    printProgress "${variable}=${value}"
+}
+##############################################################################
+#- Read deployment outputs from naming-convention Bicep template
+#  arg 1: env
+#  arg 2: visibility
+#  arg 3: Suffix
+#  arg 4: Resource Group Name
+##############################################################################
+setAzureResourceNames()
+{
+    env="$1"
+    visibility="$2"
+    suffix="$3"
+    RG="$4"
+
+    printProgress "Getting Azure resource names for env='$env' visibility='$visibility' suffix='$suffix' from bicep file: $SCRIPTS_DIRECTORY/bicep/naming-convention.bicep"
+    DEPLOY_NAME=$(date +"naming-convention-%y%m%d%H%M%S")
+    cmd="az deployment group create --name \"${DEPLOY_NAME}\" --resource-group \"${RG}\" --template-file $SCRIPTS_DIRECTORY/bicep/naming-convention.bicep --parameters suffix=\"${suffix}\" environment=\"${env}\" visibility=\"${visibility}\""
+    # printProgress "$cmd"
+    eval "$cmd" 2>/dev/null >/dev/null|| true
+    checkError
+
+    cmd="az deployment group show --name \"${DEPLOY_NAME}\" --resource-group \"${RG}\" --query properties.outputs"
+    #printProgress "$cmd"
+    RESULT=$(eval "$cmd")
+    checkError
+    printProgress "RESULT: $RESULT"
+
+    AZURE_VNET_NAME=$(echo ${RESULT}  | jq -r '.vnetName.value' 2>/dev/null)
+    echo "AZURE_VNET_NAME: $AZURE_VNET_NAME"
+    AZURE_SUBNET_NAME=$(echo ${RESULT}  | jq -r '.privateEndpointSubnetName.value' 2>/dev/null)
+    echo "AZURE_SUBNET_NAME: $AZURE_SUBNET_NAME"
+    AZURE_DATAGW_SUBNET_NAME=$(echo ${RESULT}  | jq -r '.datagwSubnetName.value' 2>/dev/null)
+    echo "AZURE_DATAGW_SUBNET_NAME: $AZURE_DATAGW_SUBNET_NAME"
+    AZURE_GATEWAY_SUBNET_NAME=$(echo ${RESULT}  | jq -r '.gatewaySubnetName.value' 2>/dev/null)
+    echo "AZURE_GATEWAY_SUBNET_NAME: $AZURE_GATEWAY_SUBNET_NAME"
+    AZURE_DNS_DELEGATION_SUBNET_NAME=$(echo ${RESULT}  | jq -r '.dnsDelegationSubNetName.value' 2>/dev/null)
+    echo "AZURE_DNS_DELEGATION_SUBNET_NAME: $AZURE_DNS_DELEGATION_SUBNET_NAME"
+
+    AZURE_FOUNDRY_NAME=$(echo ${RESULT}  | jq -r '.foundryName.value' 2>/dev/null)
+    echo "AZURE_FOUNDRY_NAME: $AZURE_FOUNDRY_NAME"
+    AZURE_FOUNDRY_PROJECT_NAME=$(echo ${RESULT}  | jq -r '.foundryProjectName.value' 2>/dev/null)
+    echo "AZURE_FOUNDRY_PROJECT_NAME: $AZURE_FOUNDRY_PROJECT_NAME"
+    AZURE_ML_NAME=$(echo ${RESULT}  | jq -r '.azureMLName.value' 2>/dev/null)
+    echo "AZURE_ML_NAME: $AZURE_ML_NAME"
+
+    AZURE_STORAGE_ACCOUNT_NAME=$(echo ${RESULT}  | jq -r '.storageAccountName.value' 2>/dev/null)
+    echo "AZURE_STORAGE_ACCOUNT_NAME: $AZURE_STORAGE_ACCOUNT_NAME"
+    AZURE_STORAGE_ACCOUNT_DEFAULT_CONTAINER_NAME=$(echo ${RESULT}  | jq -r '.storageAccountDefaultContainerName.value' 2>/dev/null)
+    echo "AZURE_STORAGE_ACCOUNT_DEFAULT_CONTAINER_NAME: $AZURE_STORAGE_ACCOUNT_DEFAULT_CONTAINER_NAME"    
+    AZURE_KEY_VAULT_NAME=$(echo ${RESULT}  | jq -r '.keyVaultName.value' 2>/dev/null)
+    echo "AZURE_KEY_VAULT_NAME: $AZURE_KEY_VAULT_NAME"
+
+    AZURE_ACR_NAME=$(echo ${RESULT}  | jq -r '.acrName.value' 2>/dev/null)
+    echo "AZURE_ACR_NAME: $AZURE_ACR_NAME"
+    AZURE_APP_INSIGHTS_NAME=$(echo ${RESULT}  | jq -r '.appInsightsName.value' 2>/dev/null)
+    echo "AZURE_APP_INSIGHTS_NAME: $AZURE_APP_INSIGHTS_NAME"
+
+    AZURE_VPN_GATEWAY_PIP_NAME=$(echo ${RESULT}  | jq -r '.vpnGatewayPublicIpName.value' 2>/dev/null)
+    echo "AZURE_VPN_GATEWAY_PIP_NAME: $AZURE_VPN_GATEWAY_PIP_NAME"
+    AZURE_DNS_RESOLVER_NAME=$(echo ${RESULT}  | jq -r '.dnsResolverName.value' 2>/dev/null)
+    echo "AZURE_DNS_RESOLVER_NAME: $AZURE_DNS_RESOLVER_NAME"
+
+    AZURE_RESOURCE_GROUP_AZURE_AI_NAME=$(echo ${RESULT}  | jq -r '.resourceGroupAzureAIName.value' 2>/dev/null)
+    echo "AZURE_RESOURCE_GROUP_AZURE_AI_NAME: $AZURE_RESOURCE_GROUP_AZURE_AI_NAME"
+
+}
+
+##############################################################################
+#- Read deployment outputs from Bicep template
+#  arg 1: Deployment Name
+#  arg 2: Resource Group Name
+##############################################################################
+readDeploymentOutputs()
+{
+    deployname="$1"
+    RG="$2"
+
+    cmd="az deployment group show --name \"${deployname}\" --resource-group \"${RG}\" --query properties.outputs"
+    #printProgress "$cmd"
+    RESULT=$(eval "$cmd")
+    checkError
+    printProgress "RESULT: $RESULT"
+
+    AZURE_MODEL_DEPLOYMENT_NAME=$(echo ${RESULT}  | jq -r '.modelDeploymentName.value' 2>/dev/null)
+    echo "AZURE_MODEL_DEPLOYMENT_NAME: $AZURE_MODEL_DEPLOYMENT_NAME"
+    AZURE_MODEL_DEPLOYMENT_URI=$(echo ${RESULT}  | jq -r '.modelDeploymentUri.value' 2>/dev/null)
+    echo "AZURE_MODEL_DEPLOYMENT_URI: $AZURE_MODEL_DEPLOYMENT_URI"
+    AZURE_MODEL_DEPLOYMENT_KEY=$(echo ${RESULT}  | jq -r '.modelDeploymentKey.value' 2>/dev/null)
+    echo "AZURE_MODEL_DEPLOYMENT_KEY: $AZURE_MODEL_DEPLOYMENT_KEY"
+    AZURE_MODEL_DEPLOYMENT_MODEL_API_VERSION=$(echo ${RESULT}  | jq -r '.modelDeploymentModelApiVersion.value' 2>/dev/null)
+    echo "AZURE_MODEL_DEPLOYMENT_MODEL_API_VERSION: $AZURE_MODEL_DEPLOYMENT_MODEL_API_VERSION"
+    AZURE_MODEL_DEPLOYMENT_MODEL_NAME=$(echo ${RESULT}  | jq -r '.modelDeploymentModelName.value' 2>/dev/null)
+    echo "AZURE_MODEL_DEPLOYMENT_MODEL_NAME: $AZURE_MODEL_DEPLOYMENT_MODEL_NAME"
+}
+
+##############################################################################
+#- Get Azure AI Resource Group Name
+#  arg 1: Env
+#  arg 2: Visibility
+#  arg 3: Suffix
+##############################################################################
+getAzureAIResourceGroupName()
+{
+    env="$1"
+    visibility="$2"
+    suffix="$3"
+    if [ ! -z "${AZURE_DEFAULT_AZURE_AI_RESOURCE_GROUP+x}" ] ; then
+        if [ -z "${AZURE_DEFAULT_AZURE_AI_RESOURCE_GROUP}" ] && [ "${AZURE_DEFAULT_AZURE_AI_RESOURCE_GROUP}" != "" ] ; then
+            echo "${AZURE_DEFAULT_AZURE_AI_RESOURCE_GROUP}"
+            return
+        fi
+    fi
+    if [ -z "${1+x}" ] ; then
+        echo "rgazureaidevpub"
+    else
+        echo "rgazureai${env}${visibility}${suffix}"
+    fi
+}
+
+##############################################################################
+#- Get Storage Account Name
+#  arg 1: Env
+#  arg 2: Visibility
+#  arg 3: Suffix
+##############################################################################
+getStorageAccountName()
+{
+    env="$1"
+    visibility="$2"
+    suffix="$3"
+    echo "st${env}${visibility}${suffix}"
+}
+##############################################################################
+#- Get Key Vault Name
+#  arg 1: Env
+#  arg 2: Visibility
+#  arg 3: Suffix
+##############################################################################
+getKeyVaultName()
+{
+    env="$1"
+    visibility="$2"
+    suffix="$3"
+    echo "kv${env}${visibility}${suffix}"
+}
+##############################################################################
+#- azure Login
+##############################################################################
+azLogin() {
+    # Check if current process's user is logged on Azure
+    if [ ! -z "${AZURE_SUBSCRIPTION_ID+x}" ] && [ ! -z "${AZURE_TENANT_ID+x}" ]; then
+        SUBSCRIPTION_ID=$(az account show --query id --output tsv 2> /dev/null) || true
+        TENANT_ID=$(az account show --query tenantId -o tsv 2> /dev/null) || true
+        if [ "$AZURE_SUBSCRIPTION_ID" = "$SUBSCRIPTION_ID" ] && [ "$AZURE_TENANT_ID" = "$TENANT_ID" ]; then
+            printMessage "Already logged in Azure CLI"
+            return
+        fi
+    fi
+    if [ ! -z "${AZURE_TENANT_ID+x}" ]; then
+        az login --tenant "$AZURE_TENANT_ID" --only-show-errors
+    else
+        az login --only-show-errors
+    fi
+    if [ ! -z "${AZURE_SUBSCRIPTION_ID+x}" ]; then
+        az account set -s "$AZURE_SUBSCRIPTION_ID" 2>/dev/null || azOk=false
+    fi
+    AZURE_SUBSCRIPTION_ID=$(az account show --query id --output tsv 2> /dev/null) || true
+    AZURE_TENANT_ID=$(az account show --query tenantId -o tsv 2> /dev/null) || true
+}
+##############################################################################
+#- checkLoginAndSubscription
+##############################################################################
+checkLoginAndSubscription() {
+    az account show -o none
+    # shellcheck disable=SC2181
+    if [ $? -ne 0 ]; then
+        printf "\nYou seems disconnected from Azure, running 'az login'."
+        azLogin
+    fi
+    CURRENT_SUBSCRIPTION_ID=$(az account show --query 'id' --output tsv)
+    if [ -z "$AZURE_SUBSCRIPTION_ID" ] || [ "$AZURE_SUBSCRIPTION_ID" != "$CURRENT_SUBSCRIPTION_ID" ]; then
+        # query subscriptions
+        printf  "\nYou have access to the following subscriptions:"
+        az account list --query '[].{name:name,"subscription Id":id}' --output table
+
+        printf "\nYour current subscription is:"
+        az account show --query '[name,id]'
+        # shellcheck disable=SC2154
+        if [ -z "$CURRENT_SUBSCRIPTION_ID" ]; then
+            echo  "
+            You will need to use a subscription with permissions for creating service principals (owner role provides this).
+            If you want to change to a different subscription, enter the name or id.
+            Or just press enter to continue with the current subscription."
+            read -r  ">> " SUBSCRIPTION_ID
+
+            if ! test -z "$SUBSCRIPTION_ID"
+            then
+                az account set -s "$SUBSCRIPTION_ID"
+                printf  "\nNow using:"
+                az account show --query '[name,id]'
+                CURRENT_SUBSCRIPTION_ID=$(az account show --query 'id' --output tsv)
+            fi
+        fi
+    fi
+}
+##############################################################################
+#- isStorageAccountNameAvailable
+##############################################################################
+isStorageAccountNameAvailable(){
+    name=$1
+    if [ "$(az storage account check-name --name "${name}" | jq -r '.nameAvailable'  2>/dev/null)" =  "false" ]
+    then
+        echo "false"
+    else
+        echo "true"
+    fi
+}
+##############################################################################
+#- isKeyVaultNameAvailable
+##############################################################################
+isKeyVaultNameAvailable(){
+    subscriptionId=$1
+    name=$2
+    if [ "$(az rest --method post --uri "https://management.azure.com/subscriptions/${subscriptionId}/providers/Microsoft.KeyVault/checkNameAvailability?api-version=2019-09-01" --headers "Content-Type=application/json" --body "{\"name\": \"${name}\",\"type\": \"Microsoft.KeyVault/vaults\"}" 2>/dev/null | jq -r ".nameAvailable"  2>/dev/null)"  =  "false" ]
+    then
+        echo "false"
+    else
+        echo "true"
+    fi
+}
+##############################################################################
+#- isResourceGroupNameAvailable
+##############################################################################
+isResourceGroupNameAvailable(){
+    name=$1
+    NAME=$(az group show -n "${name}" --query name -o tsv 2> /dev/null)
+    if [ ! -z "${NAME}" ]; then
+        FOUND="false"
+    else
+        FOUND="true"
+    fi
+    echo "$FOUND"
+}
+##############################################################################
+# getAvailableSuffix
+##############################################################################
+getAvailableSuffix() {
+    SUBSCRIPTION_ID=$1
+    FOUND="true"
+    while [ "$FOUND" = "true" ]; do
+        SUFFIX=$(shuf -i 1000-9999 -n 1)
+
+        RG=$(getAzureAIResourceGroupName "${AZURE_ENVIRONMENT}" "pub" "$SUFFIX")
+        if [ "$(isResourceGroupNameAvailable "$RG")" = "false" ]; then
+            FOUND="true"
+            continue
+        else
+            FOUND="false"
+        fi
+        RG=$(getAzureAIResourceGroupName "${AZURE_ENVIRONMENT}" "pri" "$SUFFIX")
+        if [ "$(isResourceGroupNameAvailable "$RG")" = "false" ]; then
+            FOUND="true"
+            continue
+        else
+            FOUND="false"
+        fi
+        ST=$(getStorageAccountName "$AZURE_ENVIRONMENT" "pri" "$SUFFIX")
+        if [ "$(isStorageAccountNameAvailable "$ST")" = "false" ]; then
+            FOUND="true"
+            continue
+        else
+            FOUND="false"
+        fi
+        ST=$(getStorageAccountName "$AZURE_ENVIRONMENT" "pub" "$SUFFIX")
+        if [ "$(isStorageAccountNameAvailable "$ST")" = "false" ]; then
+            FOUND="true"
+            continue
+        else
+            FOUND="false"
+        fi
+        KV=$(getKeyVaultName "$AZURE_ENVIRONMENT" "pri" "$SUFFIX")
+        if [ "$(isKeyVaultNameAvailable "$SUBSCRIPTION_ID" "$KV")" = "false" ]; then
+            FOUND="true"
+            continue
+        else
+            FOUND="false"
+        fi
+        KV=$(getKeyVaultName "$AZURE_ENVIRONMENT" "pub" "$SUFFIX")
+        if [ "$(isKeyVaultNameAvailable "$SUBSCRIPTION_ID" "$KV")" = "false" ]; then
+            FOUND="true"
+            continue
+        else
+            FOUND="false"
+        fi
+    done
+    echo "$SUFFIX"
+    exit
+}
+##############################################################################
+#- checkAzureConfiguration
+##############################################################################
+checkAzureConfiguration() {
+    az account show -o none
+    # shellcheck disable=SC2181
+    if [ $? -ne 0 ]; then
+        printf "\nYou seems disconnected from Azure, running 'az login'."
+        azLogin
+    fi
+    CURRENT_SUBSCRIPTION_ID=$(az account show --query 'id' --output tsv)
+    CURRENT_TENANT_ID=$(az account show --query 'tenantId' --output tsv)
+    if [ -z "${AZURE_SUBSCRIPTION_ID+x}" ] || [ "$AZURE_SUBSCRIPTION_ID" != "$CURRENT_SUBSCRIPTION_ID" ]; then
+        # query subscriptions
+        # printf  "\nYou have access to the following subscriptions:"
+        # az account list --query '[].{name:name,"subscription Id":id}' --output table
+
+        # printf "\nYour current subscription is:"
+        # az account show --query '[name,id]'
+        # shellcheck disable=SC2154
+        if [ -z "$CURRENT_SUBSCRIPTION_ID" ]; then
+            echo  "
+            You will need to use a subscription with permissions for creating service principals (owner role provides this).
+            If you want to change to a different subscription, enter the name or id.
+            Or just press enter to continue with the current subscription."
+            read -r  ">> " SUBSCRIPTION_ID
+
+            if ! test -z "$SUBSCRIPTION_ID"
+            then
+                az account set -s "$SUBSCRIPTION_ID"
+                printf  "\nNow using:"
+                az account show --query '[name,id]'
+                CURRENT_SUBSCRIPTION_ID=$(az account show --query 'id' --output tsv)
+                CURRENT_TENANT_ID=$(az account show --query 'tenantId' --output tsv)
+            fi
+        fi
+    fi
+    # if variable CONFIGURATION_FILE is set, read varaiable values in configuration file.
+    if [ "$CONFIGURATION_FILE" ]; then
+        if [ -f "$CONFIGURATION_FILE" ]; then
+            CONFIG_SUBSCRIPTION_ID=$(readConfigurationFileValue "$CONFIGURATION_FILE" "AZURE_SUBSCRIPTION_ID")
+            if [ ! -z "${CONFIG_SUBSCRIPTION_ID}" ] && [ "$CONFIG_SUBSCRIPTION_ID" != "$CURRENT_SUBSCRIPTION_ID" ]; then
+                printProgress "Updating a Azure Configuration file: $CONFIGURATION_FILE value: AZURE_SUBSCRIPTION_ID=$CURRENT_SUBSCRIPTION_ID..."
+                updateConfigurationFile "$CONFIGURATION_FILE" "AZURE_SUBSCRIPTION_ID" "$CURRENT_SUBSCRIPTION_ID"
+            fi
+            CONFIG_TENANT_ID=$(readConfigurationFileValue "$CONFIGURATION_FILE" "AZURE_TENANT_ID")
+            if [ ! -z "${CONFIG_TENANT_ID}" ] && [ "$CONFIG_TENANT_ID" != "$CURRENT_TENANT_ID" ]; then
+                printProgress "Updating a Azure Configuration file: $CONFIGURATION_FILE value: AZURE_TENANT_ID=$CURRENT_TENANT_ID..."
+                updateConfigurationFile "$CONFIGURATION_FILE" "AZURE_TENANT_ID" "$CURRENT_TENANT_ID"
+            fi
+            CONFIG_SUFFIX=$(readConfigurationFileValue "$CONFIGURATION_FILE" "AZURE_SUFFIX")
+            if [ -z "${CONFIG_SUFFIX}" ]; then
+                printProgress "Updating a Azure Configuration file: $CONFIGURATION_FILE value: AZURE_SUFFIX=$AZURE_SUFFIX..."
+                AZURE_SUFFIX="$(getAvailableSuffix ${CURRENT_SUBSCRIPTION_ID})"
+                printProgress "Using AZURE_SUFFIX=$AZURE_SUFFIX"
+                updateConfigurationFile "$CONFIGURATION_FILE" "AZURE_SUFFIX" "$AZURE_SUFFIX"
+            fi
+        else
+            printProgress "Creating a new Azure Configuration file: $CONFIGURATION_FILE..."
+            AZURE_SUFFIX="$(getAvailableSuffix ${CURRENT_SUBSCRIPTION_ID})"
+            printProgress "Using AZURE_SUFFIX=$AZURE_SUFFIX"
+            cat > "$CONFIGURATION_FILE" << EOF
+AZURE_REGION="${AZURE_REGION}"
+AZURE_SUFFIX="${AZURE_SUFFIX}"
+AZURE_SUBSCRIPTION_ID=${CURRENT_SUBSCRIPTION_ID}
+AZURE_TENANT_ID=${CURRENT_TENANT_ID}
+AZURE_ENVIRONMENT=${AZURE_ENVIRONMENT}
+AZURE_DEFAULT_AZURE_AI_RESOURCE_GROUP=""
+EOF
+        fi
+        readConfigurationFile "$CONFIGURATION_FILE"
+    fi
+}
+##############################################################################
+#- isdiginstalled
+##############################################################################
+isdiginstalled() {
+    command -v dig >/dev/null && echo "true" || echo "false"
+}
+##############################################################################
+#- installdig
+##############################################################################
+installdig() {
+    printProgress "Installing dig tool for DNS resolution check..."
+    cmd="sudo apt update"
+    #printProgress "${cmd}"
+    eval "${cmd}" 2>/dev/null || true    
+    cmd="sudo apt install -y dnsutils"
+    #printProgress "${cmd}"
+    eval "${cmd}" 2>/dev/null || true
+}
+##############################################################################
+#- isStoragePrivateIP
+##############################################################################
+isStoragePrivateIP() {
+    st="$1"    
+
+    dig +short "${st}.blob.core.windows.net" | grep -E '^(10\.|172\.(1[6-9]|2[0-9]|3[0-1])\.|192\.168\.)' && echo "true" || echo "false"
+}
+
+##############################################################################
+#- getCurrentObjectId
+##############################################################################
+getCurrentObjectId() {
+  UserObjectId=$(az ad signed-in-user show --query id --output tsv 2>/dev/null) || true
+  ServicePrincipalId=
+  if [ -z "$UserObjectId" ]; then
+      # shellcheck disable=SC2154
+      ServicePrincipalId=$(az ad sp show --id "$(az account show | jq -r .user.name)" --query id --output tsv  2> /dev/null)
+      ObjectId="${ServicePrincipalId}"
+  else
+      ObjectId="${UserObjectId}"
+  fi
+  echo "$ObjectId"
+}
+##############################################################################
+#- getCurrentUserPrincipalName
+##############################################################################
+getCurrentUserPrincipalName() {
+  UserPrincipalName=$(az ad signed-in-user show --query userPrincipalName --output tsv 2>/dev/null) || true
+  if [ -z "$UserPrincipalName" ]; then
+      # shellcheck disable=SC2154
+      ServicePrincipalId=$(az ad sp show --id "$(az account show | jq -r .user.name)" --query id --output tsv  2> /dev/null)
+      ObjectId="${ServicePrincipalId}"
+  else
+      ObjectId="${UserPrincipalName}"
+  fi
+  echo "$ObjectId"
+}
+##############################################################################
+#- getCurrentObjectType
+##############################################################################
+getCurrentObjectType() {
+  UserObjectId=$(az ad signed-in-user show --query id --output tsv 2>/dev/null) || true
+  ObjectType="User"
+  if [ -z "$UserObjectId" ]; then
+      # shellcheck disable=SC2154
+      ServicePrincipalId=$(az ad sp show --id "$(az account show | jq -r .user.name)" --query id --output tsv  2> /dev/null)
+      ObjectType="ServicePrincipal"
+  fi
+  echo "$ObjectType"
+}
+
+##############################################################################
+#- updateSecretInKeyVault: Update secret in Key Vault
+#  arg 1: Key Vault Name
+#  arg 2: secret name
+#  arg 3: Value
+#  arg 4: verbose (true/false)
+##############################################################################
+updateSecretInKeyVault(){
+    kv="$1"
+    secret="$2"
+    value="$3"
+    verbose="$4"
+    if [ "$verbose" = "true" ]; then
+        printProgress "Updating secret in Key Vault: ${kv} secret name: ${secret}"
+    fi
+
+    cmd="az keyvault secret set --vault-name \"${kv}\" --name \"${secret}\" --value \"${value}\" --output none"
+    # printProgress "${cmd}"
+    eval "${cmd}"
+    checkError
+    # printProgress "${secret}=${value}"
+}
+##############################################################################
+#- readSecretInKeyVault: Read secret from Key Vault
+#  arg 1: Key Vault Name
+#  arg 2: secret name
+#  arg 3: verbose (true/false)
+##############################################################################
+readSecretInKeyVault(){
+    kv="$1"
+    secret="$2"
+    verbose="$3"
+    if [ "$verbose" = "true" ]; then
+        printProgress "Reading secret from Key Vault: ${kv} secret name: ${secret}"
+    fi
+
+    cmd="az keyvault secret show --vault-name \"${kv}\" --name \"${secret}\"  --query \"value\" -o tsv "
+    #printProgress "${cmd}"
+    eval "${cmd}" 2>/dev/null || true
+    #checkError
+}
+##############################################################################
+#- getLatestDeploymentNameInResourceGroup
+##############################################################################
+getLatestDeploymentNameInResourceGroup()
+{
+    RG="$1"
+    PREFIX="$2"
+
+    cmd="az deployment group list --resource-group \"${RG}\" --query \"sort_by([?starts_with(name, '${PREFIX}')], &properties.timestamp)[-1].name\" -o tsv"
+    #printProgress "$cmd"
+    RESULT=$(eval "$cmd")
+    checkError
+
+    echo "${RESULT}"
+}
+##############################################################################
+#- openStorageFirewall
+##############################################################################
+openStorageFirewall()
+{
+    storage="$1"
+    resourceGroup="$2"
+
+    printProgress "Opening Storage Account Firewall ..."
+    cmd="az storage account update -n ${storage} -g ${resourceGroup} --default-action Allow --public-network-access Enabled --output none"
+    printProgress "$cmd"
+    eval "$cmd"
+    sleep 30
+}
+##############################################################################
+#- closeStorageFirewall
+##############################################################################
+closeStorageFirewall()
+{
+    storage="$1"
+    resourceGroup="$2"
+
+    printProgress "Closing Storage Account Firewall ..."
+    cmd="az storage account update -n ${storage} -g ${resourceGroup} --default-action Deny --public-network-access Disabled --output none"
+    printProgress "$cmd"
+    eval "$cmd"
+    sleep 30
+}
+##############################################################################
+#- uploadNotebooks
+##############################################################################
+uploadNotebooks ()
+{
+    azureMLworkspaceName="$1"
+    storageAccount="$2"
+    resourceGroup="$3"
+    fileSource="$4"
+    fileDestination="$5"
+
+    printProgress "Getting File Share Name..."
+    FILE_SHARE_NAME=$(az ml datastore list --workspace-name ${azureMLworkspaceName} -g ${resourceGroup} --query "[?name=='workspaceworkingdirectory'].file_share_name" -o tsv)
+    if [ -z "${FILE_SHARE_NAME}" ]; then
+        printError "Cannot get File Share Name 'workspaceworkingdirectory' for Azure Storage Account ${storageAccount}"
+        exit 1
+    fi
+    printProgress "File Share Name: ${FILE_SHARE_NAME}"
+    
+    path="${fileDestination}"
+    current="$(dirname "$path")"
+    while [ "$current" != "." ] && [ -n "$current" ]; do
+        printProgress "Create directory $current"
+        cmd="az storage directory create \
+        --account-name ${storageAccount} \
+        --share-name ${FILE_SHARE_NAME} \
+        --auth-mode login  --enable-file-backup-request-intent \
+        --name $current"
+        printProgress "$cmd"
+        eval "$cmd" 1>/dev/null 2>/dev/null || true
+        current="$(dirname "$current")"
+    done | tac
+    # Add 5 seconds sleep to make sure the directory is created before uploading files, otherwise upload may fail with "The specified resource does not exist" error
+    sleep 5 
+    printProgress "Uploading notebooks..."
+    cmd="az storage file upload \
+      --auth-mode login \
+      --account-name ${storageAccount} \
+      --share-name ${FILE_SHARE_NAME} \
+      --source ${fileSource} --path ${fileDestination}  --enable-file-backup-request-intent"
+    printProgress "$cmd"
+    eval "$cmd"
+}
+
+
+DEFAULT_ACTION="action not set"
+if [ -d "$SCRIPTS_DIRECTORY/../.config" ]; then
+    DEFAULT_CONFIGURATION_FILE="$SCRIPTS_DIRECTORY/../.config/.default.env"
+else
+    DEFAULT_CONFIGURATION_FILE="$SCRIPTS_DIRECTORY/../.default.env"
+fi
+DEFAULT_ENVIRONMENT="dev"
+DEFAULT_REGION="westus3"
+DEFAULT_SUBSCRIPTION_ID=""
+DEFAULT_TENANT_ID=""
+DEFAULT_RESOURCE_GROUP="rg${DEFAULT_ENVIRONMENT}public"
+DEFAULT_POSTGRESQL_ADMIN_USERNAME="sqladmin"
+DEFAULT_VM_ADMIN_USERNAME="vmadmin"
+ARG_ACTION="${DEFAULT_ACTION}"
+ARG_CONFIGURATION_FILE="${DEFAULT_CONFIGURATION_FILE}"
+ARG_ENVIRONMENT="${DEFAULT_ENVIRONMENT}"
+ARG_REGION="${DEFAULT_REGION}"
+ARG_SUBSCRIPTION_ID="${DEFAULT_SUBSCRIPTION_ID}"
+ARG_TENANT_ID="${DEFAULT_TENANT_ID}"
+ARG_RESOURCE_GROUP="${DEFAULT_RESOURCE_GROUP}"
+# shellcheck disable=SC2034
+while getopts "a:c:e:r:s:t:g:" opt; do
+    case $opt in
+    a) ARG_ACTION=$OPTARG ;;
+    c) ARG_CONFIGURATION_FILE=$OPTARG ;;
+    e) ARG_ENVIRONMENT=$OPTARG ;;
+    r) ARG_REGION=$OPTARG ;;
+    s) ARG_SUBSCRIPTION_ID=$OPTARG ;;
+    t) ARG_TENANT_ID=$OPTARG ;;
+    g) ARG_RESOURCE_GROUP=$OPTARG ;;
+    :)
+        echo "Error: -${OPTARG} requires a value"
+        exit 1
+        ;;
+    *)
+        usage
+        exit 1
+        ;;
+    esac
+done
+
+if [ $# -eq 0 ] || [ -z "${ARG_ACTION}" ] || [ -z "$ARG_CONFIGURATION_FILE" ]; then
+    printError "Required parameters are missing"
+    usage
+    exit 1
+fi
+if [ "${ARG_ACTION}" != "deploy-public-vpn" ] && \
+   [ "${ARG_ACTION}" != "azure-login" ] && \
+   [ "${ARG_ACTION}" != "deploy-private-vpn" ] && \
+   [ "${ARG_ACTION}" != "configure-private-vpn" ] && \
+   [ "${ARG_ACTION}" != "remove-public-vpn" ] && \
+   [ "${ARG_ACTION}" != "remove-private-vpn" ]; then
+    printError "ACTION '${ARG_ACTION}' not supported, possible values: deploy-public-vpn, deploy-private-vpn, configure-private-vpn, remove-public-vpn, remove-private-vpn  "
+    usage
+    exit 1
+fi
+ACTION=${ARG_ACTION}
+CONFIGURATION_FILE=""
+if [ -n "${ARG_ENVIRONMENT}" ]; then
+    AZURE_ENVIRONMENT="${ARG_ENVIRONMENT}"
+fi
+# if configuration file exists read subscription id and tenant id values in the file
+if [ "$ARG_CONFIGURATION_FILE" ]; then
+    if [ -f "$ARG_CONFIGURATION_FILE" ]; then
+        readConfigurationFile "$ARG_CONFIGURATION_FILE"
+    fi
+    CONFIGURATION_FILE=${ARG_CONFIGURATION_FILE}
+fi
+if [ -n "${ARG_SUBSCRIPTION_ID}" ]; then
+    AZURE_SUBSCRIPTION_ID="${ARG_SUBSCRIPTION_ID}"
+fi
+if [ -n "${ARG_TENANT_ID}" ]; then
+    AZURE_TENANT_ID="${ARG_TENANT_ID}"
+fi
+if [ -n "${ARG_REGION}" ]; then
+    AZURE_REGION="${ARG_REGION}"
+fi
+if [ -n "${ARG_ENVIRONMENT}" ]; then
+    AZURE_ENVIRONMENT="${ARG_ENVIRONMENT}"
+fi
+
+if [ "${ACTION}" = "azure-login" ] ; then
+    printMessage "Azure Login..."
+    azLogin
+    checkLoginAndSubscription
+    printMessage "Azure Login done"
+    CURRENT_USER=$(az ad signed-in-user show --query userPrincipalName 2> /dev/null) || true
+    CURRENT_SUBSCRIPTION_ID=$(az account show --query id --output tsv 2> /dev/null) || true
+    CURRENT_TENANT_ID=$(az account show --query tenantId -o tsv 2> /dev/null) || true
+    printMessage "You are logged in Azure CLI as user: $CURRENT_USER"
+    printMessage "Your current subscription is: $CURRENT_SUBSCRIPTION_ID"
+    printMessage "Your current tenant is: $CURRENT_TENANT_ID"
+    if [ -f "$CONFIGURATION_FILE" ]; then
+        printProgress "Updating configuration file: '${CONFIGURATION_FILE}'..."
+        updateConfigurationFile "${CONFIGURATION_FILE}" AZURE_REGION "${AZURE_REGION}"
+        updateConfigurationFile "${CONFIGURATION_FILE}" AZURE_SUBSCRIPTION_ID "${AZURE_SUBSCRIPTION_ID}"
+        updateConfigurationFile "${CONFIGURATION_FILE}" AZURE_TENANT_ID "${AZURE_TENANT_ID}"
+        updateConfigurationFile "${CONFIGURATION_FILE}" AZURE_ENVIRONMENT "${AZURE_ENVIRONMENT}"
+    else
+        printProgress "Creating a new Azure Configuration file: $CONFIGURATION_FILE..."
+        AZURE_SUFFIX="$(getAvailableSuffix ${CURRENT_SUBSCRIPTION_ID})"
+        printProgress "Using AZURE_SUFFIX=$AZURE_SUFFIX"
+        cat > "$CONFIGURATION_FILE" << EOF
+AZURE_REGION="${AZURE_REGION}"
+AZURE_SUFFIX=${AZURE_SUFFIX}
+AZURE_SUBSCRIPTION_ID=${AZURE_SUBSCRIPTION_ID}
+AZURE_TENANT_ID=${AZURE_TENANT_ID}
+AZURE_ENVIRONMENT=${AZURE_ENVIRONMENT}
+AZURE_DEFAULT_AZURE_AI_RESOURCE_GROUP=""
+EOF
+    fi
+    exit 0
+fi
+printProgress "Checking Azure Configuration..."
+checkAzureConfiguration
+
+
+if [ "${ACTION}" = "deploy-public-vpn" ] ; then
+    cmd="az config set extension.use_dynamic_install=yes_without_prompt"
+    printProgress "$cmd"
+    eval "$cmd" 1>/dev/null 2>/dev/null || true
+
+    VISIBILITY="pub"
+    RESOURCE_GROUP_NAME=$(getAzureAIResourceGroupName "${AZURE_ENVIRONMENT}" "${VISIBILITY}" "${AZURE_SUFFIX}")
+    if [ "$(az group exists --name "${RESOURCE_GROUP_NAME}")" = "false" ]; then
+        printProgress "Create resource group  '${RESOURCE_GROUP_NAME}' in location '${AZURE_REGION}'"
+        cmd="az group create -l ${AZURE_REGION} -n ${RESOURCE_GROUP_NAME}"
+        printProgress "$cmd"
+        eval "$cmd" 1>/dev/null
+        checkError
+    else
+        printProgress "Resource group '${RESOURCE_GROUP_NAME}' already exists"
+    fi
+    DEFAULT_DEPLOYMENT_PREFIX="${AZURE_ENVIRONMENT}${VISIBILITY}${AZURE_SUFFIX}"
+
+    setAzureResourceNames ${AZURE_ENVIRONMENT} "${VISIBILITY}" "${AZURE_SUFFIX}" "${RESOURCE_GROUP_NAME}"
+
+    CLIENT_IP_ADDRESS=$(curl -s https://ifconfig.me)
+    OBJECT_ID=$(getCurrentObjectId)
+    if [ -z "${OBJECT_ID}" ] || [ "${OBJECT_ID}" = "null" ]; then
+        printError "Cannot get current user Object Id"
+        exit 1
+    fi
+    OBJECT_TYPE=$(getCurrentObjectType)
+    printProgress "Deploy public Azure AI in resource group '${RESOURCE_GROUP_NAME}'"
+    DEPLOY_NAME=$(date +"${DEFAULT_DEPLOYMENT_PREFIX}-%y%m%d%H%M%S")
+    cmd="az deployment group create --resource-group $RESOURCE_GROUP_NAME  --name ${DEPLOY_NAME}   \
+    --template-file $SCRIPTS_DIRECTORY/bicep/public-main.bicep \
+    --parameters \
+    location=${AZURE_REGION} \
+    env=${AZURE_ENVIRONMENT} \
+    visibility=${VISIBILITY} \
+    suffix=${AZURE_SUFFIX} \
+    objectId=\"${OBJECT_ID}\" objectType=\"${OBJECT_TYPE}\" clientIpAddress=\"${CLIENT_IP_ADDRESS}\"  \
+     --verbose"
+    printProgress "$cmd"
+    eval "$cmd"
+    checkError
+    readDeploymentOutputs ${DEPLOY_NAME} ${RESOURCE_GROUP_NAME}
+
+    printProgress "Store secrets in Key Vault"
+    AZURE_ML_MODEL_EMPTY_ID_SECRET_NAME="AZURE-ML-MODEL-EMPTY-ID"
+    AZURE_ML_MODEL_EMPTY_ID_SECRET="Qwen/Qwen2-1.5B" 
+    AZURE_ML_MODEL_EMPTY_NAME_SECRET_NAME="AZURE-ML-MODEL-EMPTY-NAME"
+    AZURE_ML_MODEL_EMPTY_NAME_SECRET="empty" 
+    AZURE_ML_MODEL_EMPTY_SCORE_SCRIPT_SECRET_NAME="AZURE-ML-MODEL-EMPTY-SCORE-SCRIPT"
+    AZURE_ML_MODEL_EMPTY_SCORE_SCRIPT_SECRET="score-empty.py" 
+    AZURE_ML_MODEL_EMPTY_INSTANCE_TYPE_SECRET_NAME="AZURE-ML-MODEL-EMPTY-INSTANCE-TYPE" 
+    AZURE_ML_MODEL_EMPTY_INSTANCE_TYPE_SECRET="Standard_DS3_v2" 
+
+    updateSecretInKeyVault ${AZURE_KEY_VAULT_NAME} ${AZURE_ML_MODEL_EMPTY_ID_SECRET_NAME} ${AZURE_ML_MODEL_EMPTY_ID_SECRET} true
+    updateSecretInKeyVault ${AZURE_KEY_VAULT_NAME} ${AZURE_ML_MODEL_EMPTY_NAME_SECRET_NAME} ${AZURE_ML_MODEL_EMPTY_NAME_SECRET} true
+    updateSecretInKeyVault ${AZURE_KEY_VAULT_NAME} ${AZURE_ML_MODEL_EMPTY_SCORE_SCRIPT_SECRET_NAME} ${AZURE_ML_MODEL_EMPTY_SCORE_SCRIPT_SECRET} true
+    updateSecretInKeyVault ${AZURE_KEY_VAULT_NAME} ${AZURE_ML_MODEL_EMPTY_INSTANCE_TYPE_SECRET_NAME} ${AZURE_ML_MODEL_EMPTY_INSTANCE_TYPE_SECRET} true
+
+    AZURE_ML_MODEL_SMALLLM_ID_SECRET_NAME="AZURE-ML-MODEL-SMALLLM-ID"
+    AZURE_ML_MODEL_SMALLLM_ID_SECRET="Qwen/Qwen2-1.5B" 
+    AZURE_ML_MODEL_SMALLLM_NAME_SECRET_NAME="AZURE-ML-MODEL-SMALLLM-NAME"
+    AZURE_ML_MODEL_SMALLLM_NAME_SECRET="empty" 
+    AZURE_ML_MODEL_SMALLLM_SCORE_SCRIPT_SECRET_NAME="AZURE-ML-MODEL-SMALLLM-SCORE-SCRIPT"
+    AZURE_ML_MODEL_SMALLLM_SCORE_SCRIPT_SECRET="score-empty.py" 
+    AZURE_ML_MODEL_SMALLLM_INSTANCE_TYPE_SECRET_NAME="AZURE-ML-MODEL-SMALLLM-INSTANCE-TYPE" 
+    AZURE_ML_MODEL_SMALLLM_INSTANCE_TYPE_SECRET="Standard_DS3_v2" 
+
+    updateSecretInKeyVault ${AZURE_KEY_VAULT_NAME} ${AZURE_ML_MODEL_SMALLLM_ID_SECRET_NAME} ${AZURE_ML_MODEL_SMALLLM_ID_SECRET} true
+    updateSecretInKeyVault ${AZURE_KEY_VAULT_NAME} ${AZURE_ML_MODEL_SMALLLM_NAME_SECRET_NAME} ${AZURE_ML_MODEL_SMALLLM_NAME_SECRET} true
+    updateSecretInKeyVault ${AZURE_KEY_VAULT_NAME} ${AZURE_ML_MODEL_SMALLLM_SCORE_SCRIPT_SECRET_NAME} ${AZURE_ML_MODEL_SMALLLM_SCORE_SCRIPT_SECRET} true
+    updateSecretInKeyVault ${AZURE_KEY_VAULT_NAME} ${AZURE_ML_MODEL_SMALLLM_INSTANCE_TYPE_SECRET_NAME} ${AZURE_ML_MODEL_SMALLLM_INSTANCE_TYPE_SECRET} true
+
+    AZURE_ML_MODEL_OPT350M_ID_SECRET_NAME="AZURE-ML-MODEL-OPT350M-ID"
+    AZURE_ML_MODEL_OPT350M_ID_SECRET="facebook/opt-350m" 
+    AZURE_ML_MODEL_OPT350M_NAME_SECRET_NAME="AZURE-ML-MODEL-OPT350M-NAME"
+    AZURE_ML_MODEL_OPT350M_NAME_SECRET="opt350m" 
+    AZURE_ML_MODEL_OPT350M_SCORE_SCRIPT_SECRET_NAME="AZURE-ML-MODEL-OPT350M-SCORE-SCRIPT"
+    AZURE_ML_MODEL_OPT350M_SCORE_SCRIPT_SECRET="score-opt350m.py" 
+    AZURE_ML_MODEL_OPT350M_INSTANCE_TYPE_SECRET_NAME="AZURE-ML-MODEL-OPT350M-INSTANCE-TYPE" 
+    AZURE_ML_MODEL_OPT350M_INSTANCE_TYPE_SECRET="Standard_NC4as_T4_v3" 
+
+    updateSecretInKeyVault ${AZURE_KEY_VAULT_NAME} ${AZURE_ML_MODEL_OPT350M_ID_SECRET_NAME} ${AZURE_ML_MODEL_OPT350M_ID_SECRET} true
+    updateSecretInKeyVault ${AZURE_KEY_VAULT_NAME} ${AZURE_ML_MODEL_OPT350M_NAME_SECRET_NAME} ${AZURE_ML_MODEL_OPT350M_NAME_SECRET} true
+    updateSecretInKeyVault ${AZURE_KEY_VAULT_NAME} ${AZURE_ML_MODEL_OPT350M_SCORE_SCRIPT_SECRET_NAME} ${AZURE_ML_MODEL_OPT350M_SCORE_SCRIPT_SECRET} true
+    updateSecretInKeyVault ${AZURE_KEY_VAULT_NAME} ${AZURE_ML_MODEL_OPT350M_INSTANCE_TYPE_SECRET_NAME} ${AZURE_ML_MODEL_OPT350M_INSTANCE_TYPE_SECRET} true
+
+    AZURE_ML_MODEL_QWEN215B_ID_SECRET_NAME="AZURE-ML-MODEL-QWEN215B-ID"
+    AZURE_ML_MODEL_QWEN215B_ID_SECRET="Qwen/Qwen2-1.5B" 
+    AZURE_ML_MODEL_QWEN215B_NAME_SECRET_NAME="AZURE-ML-MODEL-QWEN215B-NAME"
+    AZURE_ML_MODEL_QWEN215B_NAME_SECRET="qwen215b" 
+    AZURE_ML_MODEL_QWEN215B_SCORE_SCRIPT_SECRET_NAME="AZURE-ML-MODEL-QWEN215B-SCORE-SCRIPT"
+    AZURE_ML_MODEL_QWEN215B_SCORE_SCRIPT_SECRET="score-qwen2-15b.py" 
+    AZURE_ML_MODEL_QWEN215B_INSTANCE_TYPE_SECRET_NAME="AZURE-ML-MODEL-QWEN215B-INSTANCE-TYPE" 
+    AZURE_ML_MODEL_QWEN215B_INSTANCE_TYPE_SECRET="Standard_NC4as_T4_v3"
+
+    updateSecretInKeyVault ${AZURE_KEY_VAULT_NAME} ${AZURE_ML_MODEL_QWEN215B_ID_SECRET_NAME} ${AZURE_ML_MODEL_QWEN215B_ID_SECRET} true
+    updateSecretInKeyVault ${AZURE_KEY_VAULT_NAME} ${AZURE_ML_MODEL_QWEN215B_NAME_SECRET_NAME} ${AZURE_ML_MODEL_QWEN215B_NAME_SECRET} true
+    updateSecretInKeyVault ${AZURE_KEY_VAULT_NAME} ${AZURE_ML_MODEL_QWEN215B_SCORE_SCRIPT_SECRET_NAME} ${AZURE_ML_MODEL_QWEN215B_SCORE_SCRIPT_SECRET} true
+    updateSecretInKeyVault ${AZURE_KEY_VAULT_NAME} ${AZURE_ML_MODEL_QWEN215B_INSTANCE_TYPE_SECRET_NAME} ${AZURE_ML_MODEL_QWEN215B_INSTANCE_TYPE_SECRET} true
+
+    AZURE_ML_MODEL_PREFIX_SECRET_NAME="AZURE-ML-MODEL-PREFIX" 
+    AZURE_ML_MODEL_PREFIX_SECRET="mdl" 
+    AZURE_ML_ENDPOINT_PREFIX_SECRET_NAME="AZURE-ML-ENDPOINT-PREFIX" 
+    AZURE_ML_ENDPOINT_PREFIX_SECRET="edp" 
+    AZURE_ML_ENV_PREFIX_SECRET_NAME="AZURE-ML-ENV-PREFIX" 
+    AZURE_ML_ENV_PREFIX_SECRET="env" 
+    AZURE_ML_SUBSCRIPTION_ID_SECRET_NAME="AZURE-ML-SUBSCRIPTION-ID" 
+    AZURE_ML_SUBSCRIPTION_ID_SECRET=${AZURE_SUBSCRIPTION_ID} 
+    AZURE_ML_RESOURCE_GROUP_SECRET_NAME="AZURE-ML-RESOURCE-GROUP" 
+    AZURE_ML_RESOURCE_GROUP_SECRET=${AZURE_RESOURCE_GROUP_AZURE_AI_NAME} 
+    AZURE_ML_WORKSPACE_NAME_SECRET_NAME="AZURE-ML-WORKSPACE-NAME"
+    AZURE_ML_WORKSPACE_NAME_SECRET=${AZURE_ML_NAME} 
+    
+    updateSecretInKeyVault ${AZURE_KEY_VAULT_NAME} ${AZURE_ML_MODEL_PREFIX_SECRET_NAME} ${AZURE_ML_MODEL_PREFIX_SECRET} true
+    updateSecretInKeyVault ${AZURE_KEY_VAULT_NAME} ${AZURE_ML_ENDPOINT_PREFIX_SECRET_NAME} ${AZURE_ML_ENDPOINT_PREFIX_SECRET} true
+    updateSecretInKeyVault ${AZURE_KEY_VAULT_NAME} ${AZURE_ML_ENV_PREFIX_SECRET_NAME} ${AZURE_ML_ENV_PREFIX_SECRET} true
+    updateSecretInKeyVault ${AZURE_KEY_VAULT_NAME} ${AZURE_ML_SUBSCRIPTION_ID_SECRET_NAME} ${AZURE_ML_SUBSCRIPTION_ID_SECRET} true
+    updateSecretInKeyVault ${AZURE_KEY_VAULT_NAME} ${AZURE_ML_RESOURCE_GROUP_SECRET_NAME} ${AZURE_ML_RESOURCE_GROUP_SECRET} true
+    updateSecretInKeyVault ${AZURE_KEY_VAULT_NAME} ${AZURE_ML_WORKSPACE_NAME_SECRET_NAME} ${AZURE_ML_WORKSPACE_NAME_SECRET} true
+
+    AZURE_MODEL_DEPLOYMENT_NAME_SECRET_NAME="AZURE-ML-MODEL-DEPLOYMENT-NAME" 
+    AZURE_MODEL_DEPLOYMENT_NAME_SECRET="${AZURE_MODEL_DEPLOYMENT_NAME}" 
+    AZURE_MODEL_DEPLOYMENT_URI_SECRET_NAME="AZURE-ML-MODEL-DEPLOYMENT-URI" 
+    AZURE_MODEL_DEPLOYMENT_URI_SECRET="${AZURE_MODEL_DEPLOYMENT_URI}" 
+    AZURE_MODEL_DEPLOYMENT_KEY_SECRET_NAME="AZURE-ML-MODEL-DEPLOYMENT-KEY" 
+    AZURE_MODEL_DEPLOYMENT_KEY_SECRET="${AZURE_MODEL_DEPLOYMENT_KEY}" 
+    AZURE_MODEL_DEPLOYMENT_MODEL_API_VERSION_SECRET_NAME="AZURE-ML-MODEL-DEPLOYMENT-MODEL-API-VERSION" 
+    AZURE_MODEL_DEPLOYMENT_MODEL_API_VERSION_SECRET="${AZURE_MODEL_DEPLOYMENT_MODEL_API_VERSION}"
+    AZURE_MODEL_DEPLOYMENT_MODEL_NAME_SECRET_NAME="AZURE-ML-MODEL-DEPLOYMENT-MODEL-NAME" 
+    AZURE_MODEL_DEPLOYMENT_MODEL_NAME_SECRET="${AZURE_MODEL_DEPLOYMENT_MODEL_NAME}"
+
+    AZURE_FOUNDRY_PROJECT_ENDPOINT_SECRET_NAME="AZURE-FOUNDRY-PROJECT-ENDPOINT"
+    AZURE_FOUNDRY_PROJECT_ENDPOINT=$(az cognitiveservices account project show -n ${AZURE_FOUNDRY_NAME} --project-name ${AZURE_FOUNDRY_PROJECT_NAME} -g ${RESOURCE_GROUP_NAME} --query properties.endpoints -o tsv)
+    AZURE_FOUNDRY_PROJECT_ENDPOINT_SECRET="${AZURE_FOUNDRY_PROJECT_ENDPOINT}"
+
+    updateSecretInKeyVault ${AZURE_KEY_VAULT_NAME} ${AZURE_MODEL_DEPLOYMENT_NAME_SECRET_NAME} ${AZURE_MODEL_DEPLOYMENT_NAME_SECRET} true
+    updateSecretInKeyVault ${AZURE_KEY_VAULT_NAME} ${AZURE_MODEL_DEPLOYMENT_URI_SECRET_NAME} ${AZURE_MODEL_DEPLOYMENT_URI_SECRET} true
+    if [ -n "${AZURE_MODEL_DEPLOYMENT_KEY_SECRET}" ] && [ "${AZURE_MODEL_DEPLOYMENT_KEY_SECRET}" != "null" ] && [ "${AZURE_MODEL_DEPLOYMENT_KEY_SECRET}" != "" ]; then
+        updateSecretInKeyVault ${AZURE_KEY_VAULT_NAME} ${AZURE_MODEL_DEPLOYMENT_KEY_SECRET_NAME} ${AZURE_MODEL_DEPLOYMENT_KEY_SECRET} true
+    else
+        updateSecretInKeyVault ${AZURE_KEY_VAULT_NAME} ${AZURE_MODEL_DEPLOYMENT_KEY_SECRET_NAME} "null" true
+    fi
+    updateSecretInKeyVault ${AZURE_KEY_VAULT_NAME} ${AZURE_MODEL_DEPLOYMENT_MODEL_API_VERSION_SECRET_NAME} ${AZURE_MODEL_DEPLOYMENT_MODEL_API_VERSION_SECRET} true
+    updateSecretInKeyVault ${AZURE_KEY_VAULT_NAME} ${AZURE_MODEL_DEPLOYMENT_MODEL_NAME_SECRET_NAME} ${AZURE_MODEL_DEPLOYMENT_MODEL_NAME_SECRET} true    
+    updateSecretInKeyVault ${AZURE_KEY_VAULT_NAME} ${AZURE_FOUNDRY_PROJECT_ENDPOINT_SECRET_NAME} ${AZURE_FOUNDRY_PROJECT_ENDPOINT_SECRET} true
+    
+    printProgress "Uploading notebooks to Azure Storage ${AZURE_STORAGE_ACCOUNT_NAME} ..."
+    uploadNotebooks "${AZURE_ML_NAME}" "${AZURE_STORAGE_ACCOUNT_NAME}" "${AZURE_RESOURCE_GROUP_AZURE_AI_NAME}" "$SCRIPTS_DIRECTORY/../notebooks/deploy-model-empty.ipynb" "Users/shared/deploy-model-empty.ipynb"
+    uploadNotebooks "${AZURE_ML_NAME}" "${AZURE_STORAGE_ACCOUNT_NAME}" "${AZURE_RESOURCE_GROUP_AZURE_AI_NAME}" "$SCRIPTS_DIRECTORY/../notebooks/evaluation-model-empty.ipynb" "Users/shared/evaluation-model-empty.ipynb"
+    uploadNotebooks "${AZURE_ML_NAME}" "${AZURE_STORAGE_ACCOUNT_NAME}" "${AZURE_RESOURCE_GROUP_AZURE_AI_NAME}" "$SCRIPTS_DIRECTORY/../notebooks/deploy-model-opt350m.ipynb" "Users/shared/deploy-model-opt350m.ipynb"
+    uploadNotebooks "${AZURE_ML_NAME}" "${AZURE_STORAGE_ACCOUNT_NAME}" "${AZURE_RESOURCE_GROUP_AZURE_AI_NAME}" "$SCRIPTS_DIRECTORY/../notebooks/evaluation-model-opt350m.ipynb" "Users/shared/evaluation-model-opt350m.ipynb"
+    uploadNotebooks "${AZURE_ML_NAME}" "${AZURE_STORAGE_ACCOUNT_NAME}" "${AZURE_RESOURCE_GROUP_AZURE_AI_NAME}" "$SCRIPTS_DIRECTORY/../notebooks/deploy-model-qwen2-15b.ipynb" "Users/shared/deploy-model-qwen2-15b.ipynb"
+    uploadNotebooks "${AZURE_ML_NAME}" "${AZURE_STORAGE_ACCOUNT_NAME}" "${AZURE_RESOURCE_GROUP_AZURE_AI_NAME}" "$SCRIPTS_DIRECTORY/../notebooks/evaluation-model-qwen2-15b.ipynb" "Users/shared/evaluation-model-qwen2-15b.ipynb"
+    uploadNotebooks "${AZURE_ML_NAME}" "${AZURE_STORAGE_ACCOUNT_NAME}" "${AZURE_RESOURCE_GROUP_AZURE_AI_NAME}" "$SCRIPTS_DIRECTORY/../notebooks/deploy-model-smalllm.ipynb" "Users/shared/deploy-model-smalllm.ipynb"
+    uploadNotebooks "${AZURE_ML_NAME}" "${AZURE_STORAGE_ACCOUNT_NAME}" "${AZURE_RESOURCE_GROUP_AZURE_AI_NAME}" "$SCRIPTS_DIRECTORY/../notebooks/evaluation-model-smalllm.ipynb" "Users/shared/evaluation-model-smalllm.ipynb"
+    uploadNotebooks "${AZURE_ML_NAME}" "${AZURE_STORAGE_ACCOUNT_NAME}" "${AZURE_RESOURCE_GROUP_AZURE_AI_NAME}" "$SCRIPTS_DIRECTORY/../notebooks/evaluation-model-open-ai.ipynb" "Users/shared/evaluation-model-open-ai.ipynb"
+    uploadNotebooks "${AZURE_ML_NAME}" "${AZURE_STORAGE_ACCOUNT_NAME}" "${AZURE_RESOURCE_GROUP_AZURE_AI_NAME}" "$SCRIPTS_DIRECTORY/../notebooks/src/score-empty.py" "Users/shared/src/score-empty.py"
+    uploadNotebooks "${AZURE_ML_NAME}" "${AZURE_STORAGE_ACCOUNT_NAME}" "${AZURE_RESOURCE_GROUP_AZURE_AI_NAME}" "$SCRIPTS_DIRECTORY/../notebooks/src/score-opt350m.py" "Users/shared/src/score-opt350m.py"
+    uploadNotebooks "${AZURE_ML_NAME}" "${AZURE_STORAGE_ACCOUNT_NAME}" "${AZURE_RESOURCE_GROUP_AZURE_AI_NAME}" "$SCRIPTS_DIRECTORY/../notebooks/src/score-qwen2-15b.py" "Users/shared/src/score-qwen2-15b.py"
+    uploadNotebooks "${AZURE_ML_NAME}" "${AZURE_STORAGE_ACCOUNT_NAME}" "${AZURE_RESOURCE_GROUP_AZURE_AI_NAME}" "$SCRIPTS_DIRECTORY/../notebooks/src/score-smalllm.py" "Users/shared/src/score-smalllm.py"
+
+    updateConfigurationFile "${CONFIGURATION_FILE}" AZURE_FOUNDRY_NAME "${AZURE_FOUNDRY_NAME}"
+    updateConfigurationFile "${CONFIGURATION_FILE}" AZURE_FOUNDRY_PROJECT_NAME "${AZURE_FOUNDRY_PROJECT_NAME}"
+    updateConfigurationFile "${CONFIGURATION_FILE}" AZURE_ML_NAME "${AZURE_ML_NAME}"
+    exit 0
+fi
+
+
+if [ "${ACTION}" = "deploy-private-vpn" ] ; then
+    cmd="az config set extension.use_dynamic_install=yes_without_prompt"
+    printProgress "$cmd"
+    eval "$cmd" 1>/dev/null 2>/dev/null || true
+
+    VISIBILITY="pri"
+    RESOURCE_GROUP_NAME=$(getAzureAIResourceGroupName "${AZURE_ENVIRONMENT}" "${VISIBILITY}" "${AZURE_SUFFIX}")
+    if [ "$(az group exists --name "${RESOURCE_GROUP_NAME}")" = "false" ]; then
+        printProgress "Create resource group  '${RESOURCE_GROUP_NAME}' in location '${AZURE_REGION}'"
+        cmd="az group create -l ${AZURE_REGION} -n ${RESOURCE_GROUP_NAME}"
+        printProgress "$cmd"
+        eval "$cmd" 1>/dev/null
+        if [ -z "${AZURE_SUFFIX+x}" ] || [ "${AZURE_SUFFIX}" = "" ]; then
+            SUFFIX=$(shuf -i 1000-9999 -n 1)
+            updateConfigurationFile "${CONFIGURATION_FILE}" AZURE_SUFFIX "${SUFFIX}"
+            AZURE_SUFFIX="${SUFFIX}"
+        fi
+        checkError
+    else
+        printProgress "Resource group '${RESOURCE_GROUP_NAME}' already exists"
+    fi
+    DEFAULT_DEPLOYMENT_PREFIX="${AZURE_ENVIRONMENT}${VISIBILITY}${AZURE_SUFFIX}"
+
+    setAzureResourceNames ${AZURE_ENVIRONMENT} "${VISIBILITY}" "${AZURE_SUFFIX}" "${RESOURCE_GROUP_NAME}"
+    printProgress "Deploy private azure ML and foundry in resource group '${RESOURCE_GROUP_NAME}'"
+    
+    CLIENT_IP_ADDRESS=$(curl -s https://ifconfig.me)
+    OBJECT_ID=$(getCurrentObjectId)
+    if [ -z "${OBJECT_ID}" ] || [ "${OBJECT_ID}" = "null" ]; then
+        printError "Cannot get current user Object Id"
+        exit 1
+    fi    
+    OBJECT_TYPE=$(getCurrentObjectType)
+  
+    DEPLOY_NAME=$(date +"${DEFAULT_DEPLOYMENT_PREFIX}-%y%m%d%H%M%S")
+    cmd="az deployment group create --resource-group $RESOURCE_GROUP_NAME --name ${DEPLOY_NAME} \
+    --template-file $SCRIPTS_DIRECTORY/bicep/private-main.bicep \
+    --parameters \
+    location=${AZURE_REGION} \
+    env=${AZURE_ENVIRONMENT} \
+    visibility=${VISIBILITY} \
+    suffix=${AZURE_SUFFIX} \
+    vnetAddressPrefix=\"10.13.0.0/16\" \
+    privateEndpointSubnetAddressPrefix=\"10.13.0.0/24\" \
+    bastionSubnetAddressPrefix=\"10.13.1.0/24\" \
+    datagwSubnetAddressPrefix=\"10.13.2.0/24\" \
+    gatewaySubnetAddressPrefix=\"10.13.3.0/24\" \
+    dnsDelegationSubnetAddressPrefix=\"10.13.4.0/24\" \
+    dnsDelegationSubnetIPAddress=\"10.13.4.22\" \
+    dnsZoneResourceGroupName=\"${RESOURCE_GROUP_NAME}\" \
+    dnsZoneSubscriptionId=\"${AZURE_SUBSCRIPTION_ID}\" \
+    newOrExistingDnsZones=\"new\" \
+    objectId=\"${OBJECT_ID}\"  objectType=\"${OBJECT_TYPE}\" clientIpAddress=\"${CLIENT_IP_ADDRESS}\" \
+     --verbose"
+    printProgress "$cmd"
+    eval "$cmd"
+    checkError
+    readDeploymentOutputs ${DEPLOY_NAME} ${RESOURCE_GROUP_NAME}
+
+    # printProgress "Store secrets in Key Vault"
+    # AZURE_ML_MODEL_EMPTY_ID_SECRET_NAME="AZURE-ML-MODEL-EMPTY-ID"
+    # AZURE_ML_MODEL_EMPTY_ID_SECRET="Qwen/Qwen2-1.5B" 
+    # AZURE_ML_MODEL_EMPTY_NAME_SECRET_NAME="AZURE-ML-MODEL-EMPTY-NAME"
+    # AZURE_ML_MODEL_EMPTY_NAME_SECRET="empty" 
+    # AZURE_ML_MODEL_EMPTY_SCORE_SCRIPT_SECRET_NAME="AZURE-ML-MODEL-EMPTY-SCORE-SCRIPT"
+    # AZURE_ML_MODEL_EMPTY_SCORE_SCRIPT_SECRET="score-empty.py" 
+    # AZURE_ML_MODEL_EMPTY_INSTANCE_TYPE_SECRET_NAME="AZURE-ML-MODEL-EMPTY-INSTANCE-TYPE" 
+    # AZURE_ML_MODEL_EMPTY_INSTANCE_TYPE_SECRET="Standard_DS3_v2" 
+
+    # updateSecretInKeyVault ${AZURE_KEY_VAULT_NAME} ${AZURE_ML_MODEL_EMPTY_ID_SECRET_NAME} ${AZURE_ML_MODEL_EMPTY_ID_SECRET} true
+    # updateSecretInKeyVault ${AZURE_KEY_VAULT_NAME} ${AZURE_ML_MODEL_EMPTY_NAME_SECRET_NAME} ${AZURE_ML_MODEL_EMPTY_NAME_SECRET} true
+    # updateSecretInKeyVault ${AZURE_KEY_VAULT_NAME} ${AZURE_ML_MODEL_EMPTY_SCORE_SCRIPT_SECRET_NAME} ${AZURE_ML_MODEL_EMPTY_SCORE_SCRIPT_SECRET} true
+    # updateSecretInKeyVault ${AZURE_KEY_VAULT_NAME} ${AZURE_ML_MODEL_EMPTY_INSTANCE_TYPE_SECRET_NAME} ${AZURE_ML_MODEL_EMPTY_INSTANCE_TYPE_SECRET} true
+
+    # AZURE_ML_MODEL_SMALLLM_ID_SECRET_NAME="AZURE-ML-MODEL-SMALLLM-ID"
+    # AZURE_ML_MODEL_SMALLLM_ID_SECRET="Qwen/Qwen2-1.5B" 
+    # AZURE_ML_MODEL_SMALLLM_NAME_SECRET_NAME="AZURE-ML-MODEL-SMALLLM-NAME"
+    # AZURE_ML_MODEL_SMALLLM_NAME_SECRET="empty" 
+    # AZURE_ML_MODEL_SMALLLM_SCORE_SCRIPT_SECRET_NAME="AZURE-ML-MODEL-SMALLLM-SCORE-SCRIPT"
+    # AZURE_ML_MODEL_SMALLLM_SCORE_SCRIPT_SECRET="score-empty.py" 
+    # AZURE_ML_MODEL_SMALLLM_INSTANCE_TYPE_SECRET_NAME="AZURE-ML-MODEL-SMALLLM-INSTANCE-TYPE" 
+    # AZURE_ML_MODEL_SMALLLM_INSTANCE_TYPE_SECRET="Standard_DS3_v2" 
+
+    # updateSecretInKeyVault ${AZURE_KEY_VAULT_NAME} ${AZURE_ML_MODEL_SMALLLM_ID_SECRET_NAME} ${AZURE_ML_MODEL_SMALLLM_ID_SECRET} true
+    # updateSecretInKeyVault ${AZURE_KEY_VAULT_NAME} ${AZURE_ML_MODEL_SMALLLM_NAME_SECRET_NAME} ${AZURE_ML_MODEL_SMALLLM_NAME_SECRET} true
+    # updateSecretInKeyVault ${AZURE_KEY_VAULT_NAME} ${AZURE_ML_MODEL_SMALLLM_SCORE_SCRIPT_SECRET_NAME} ${AZURE_ML_MODEL_SMALLLM_SCORE_SCRIPT_SECRET} true
+    # updateSecretInKeyVault ${AZURE_KEY_VAULT_NAME} ${AZURE_ML_MODEL_SMALLLM_INSTANCE_TYPE_SECRET_NAME} ${AZURE_ML_MODEL_SMALLLM_INSTANCE_TYPE_SECRET} true
+
+
+    # AZURE_ML_MODEL_OPT350M_ID_SECRET_NAME="AZURE-ML-MODEL-OPT350M-ID"
+    # AZURE_ML_MODEL_OPT350M_ID_SECRET="facebook/opt-350m" 
+    # AZURE_ML_MODEL_OPT350M_NAME_SECRET_NAME="AZURE-ML-MODEL-OPT350M-NAME"
+    # AZURE_ML_MODEL_OPT350M_NAME_SECRET="opt350m" 
+    # AZURE_ML_MODEL_OPT350M_SCORE_SCRIPT_SECRET_NAME="AZURE-ML-MODEL-OPT350M-SCORE-SCRIPT"
+    # AZURE_ML_MODEL_OPT350M_SCORE_SCRIPT_SECRET="score-opt350m.py" 
+    # AZURE_ML_MODEL_OPT350M_INSTANCE_TYPE_SECRET_NAME="AZURE-ML-MODEL-OPT350M-INSTANCE-TYPE" 
+    # AZURE_ML_MODEL_OPT350M_INSTANCE_TYPE_SECRET="Standard_NC4as_T4_v3" 
+
+    # updateSecretInKeyVault ${AZURE_KEY_VAULT_NAME} ${AZURE_ML_MODEL_OPT350M_ID_SECRET_NAME} ${AZURE_ML_MODEL_OPT350M_ID_SECRET} true
+    # updateSecretInKeyVault ${AZURE_KEY_VAULT_NAME} ${AZURE_ML_MODEL_OPT350M_NAME_SECRET_NAME} ${AZURE_ML_MODEL_OPT350M_NAME_SECRET} true
+    # updateSecretInKeyVault ${AZURE_KEY_VAULT_NAME} ${AZURE_ML_MODEL_OPT350M_SCORE_SCRIPT_SECRET_NAME} ${AZURE_ML_MODEL_OPT350M_SCORE_SCRIPT_SECRET} true
+    # updateSecretInKeyVault ${AZURE_KEY_VAULT_NAME} ${AZURE_ML_MODEL_OPT350M_INSTANCE_TYPE_SECRET_NAME} ${AZURE_ML_MODEL_OPT350M_INSTANCE_TYPE_SECRET} true
+
+    # AZURE_ML_MODEL_QWEN215B_ID_SECRET_NAME="AZURE-ML-MODEL-QWEN215B-ID"
+    # AZURE_ML_MODEL_QWEN215B_ID_SECRET="Qwen/Qwen2-1.5B" 
+    # AZURE_ML_MODEL_QWEN215B_NAME_SECRET_NAME="AZURE-ML-MODEL-QWEN215B-NAME"
+    # AZURE_ML_MODEL_QWEN215B_NAME_SECRET="qwen215b" 
+    # AZURE_ML_MODEL_QWEN215B_SCORE_SCRIPT_SECRET_NAME="AZURE-ML-MODEL-QWEN215B-SCORE-SCRIPT"
+    # AZURE_ML_MODEL_QWEN215B_SCORE_SCRIPT_SECRET="score-qwen2-15b.py" 
+    # AZURE_ML_MODEL_QWEN215B_INSTANCE_TYPE_SECRET_NAME="AZURE-ML-MODEL-QWEN215B-INSTANCE-TYPE" 
+    # AZURE_ML_MODEL_QWEN215B_INSTANCE_TYPE_SECRET="Standard_NC4as_T4_v3"
+
+    # updateSecretInKeyVault ${AZURE_KEY_VAULT_NAME} ${AZURE_ML_MODEL_QWEN215B_ID_SECRET_NAME} ${AZURE_ML_MODEL_QWEN215B_ID_SECRET} true
+    # updateSecretInKeyVault ${AZURE_KEY_VAULT_NAME} ${AZURE_ML_MODEL_QWEN215B_NAME_SECRET_NAME} ${AZURE_ML_MODEL_QWEN215B_NAME_SECRET} true
+    # updateSecretInKeyVault ${AZURE_KEY_VAULT_NAME} ${AZURE_ML_MODEL_QWEN215B_SCORE_SCRIPT_SECRET_NAME} ${AZURE_ML_MODEL_QWEN215B_SCORE_SCRIPT_SECRET} true
+    # updateSecretInKeyVault ${AZURE_KEY_VAULT_NAME} ${AZURE_ML_MODEL_QWEN215B_INSTANCE_TYPE_SECRET_NAME} ${AZURE_ML_MODEL_QWEN215B_INSTANCE_TYPE_SECRET} true
+
+    # AZURE_ML_MODEL_PREFIX_SECRET_NAME="AZURE-ML-MODEL-PREFIX" 
+    # AZURE_ML_MODEL_PREFIX_SECRET="mdl" 
+    # AZURE_ML_ENDPOINT_PREFIX_SECRET_NAME="AZURE-ML-ENDPOINT-PREFIX" 
+    # AZURE_ML_ENDPOINT_PREFIX_SECRET="edp" 
+    # AZURE_ML_ENV_PREFIX_SECRET_NAME="AZURE-ML-ENV-PREFIX" 
+    # AZURE_ML_ENV_PREFIX_SECRET="env" 
+    # AZURE_ML_SUBSCRIPTION_ID_SECRET_NAME="AZURE-ML-SUBSCRIPTION-ID" 
+    # AZURE_ML_SUBSCRIPTION_ID_SECRET=${AZURE_SUBSCRIPTION_ID} 
+    # AZURE_ML_RESOURCE_GROUP_SECRET_NAME="AZURE-ML-RESOURCE-GROUP" 
+    # AZURE_ML_RESOURCE_GROUP_SECRET=${AZURE_RESOURCE_GROUP_AZURE_AI_NAME} 
+    # AZURE_ML_WORKSPACE_NAME_SECRET_NAME="AZURE-ML-WORKSPACE-NAME"
+    # AZURE_ML_WORKSPACE_NAME_SECRET=${AZURE_ML_NAME} 
+    
+    # updateSecretInKeyVault ${AZURE_KEY_VAULT_NAME} ${AZURE_ML_MODEL_PREFIX_SECRET_NAME} ${AZURE_ML_MODEL_PREFIX_SECRET} true
+    # updateSecretInKeyVault ${AZURE_KEY_VAULT_NAME} ${AZURE_ML_ENDPOINT_PREFIX_SECRET_NAME} ${AZURE_ML_ENDPOINT_PREFIX_SECRET} true
+    # updateSecretInKeyVault ${AZURE_KEY_VAULT_NAME} ${AZURE_ML_ENV_PREFIX_SECRET_NAME} ${AZURE_ML_ENV_PREFIX_SECRET} true
+    # updateSecretInKeyVault ${AZURE_KEY_VAULT_NAME} ${AZURE_ML_SUBSCRIPTION_ID_SECRET_NAME} ${AZURE_ML_SUBSCRIPTION_ID_SECRET} true
+    # updateSecretInKeyVault ${AZURE_KEY_VAULT_NAME} ${AZURE_ML_RESOURCE_GROUP_SECRET_NAME} ${AZURE_ML_RESOURCE_GROUP_SECRET} true
+    # updateSecretInKeyVault ${AZURE_KEY_VAULT_NAME} ${AZURE_ML_WORKSPACE_NAME_SECRET_NAME} ${AZURE_ML_WORKSPACE_NAME_SECRET} true
+
+    # AZURE_MODEL_DEPLOYMENT_NAME_SECRET_NAME="AZURE-ML-MODEL-DEPLOYMENT-NAME" 
+    # AZURE_MODEL_DEPLOYMENT_NAME_SECRET="${AZURE_MODEL_DEPLOYMENT_NAME}" 
+    # AZURE_MODEL_DEPLOYMENT_URI_SECRET_NAME="AZURE-ML-MODEL-DEPLOYMENT-URI" 
+    # AZURE_MODEL_DEPLOYMENT_URI_SECRET="${AZURE_MODEL_DEPLOYMENT_URI}" 
+    # AZURE_MODEL_DEPLOYMENT_KEY_SECRET_NAME="AZURE-ML-MODEL-DEPLOYMENT-KEY" 
+    # AZURE_MODEL_DEPLOYMENT_KEY_SECRET="${AZURE_MODEL_DEPLOYMENT_KEY}" 
+    # AZURE_MODEL_DEPLOYMENT_MODEL_API_VERSION_SECRET_NAME="AZURE-ML-MODEL-DEPLOYMENT-MODEL-API-VERSION" 
+    # AZURE_MODEL_DEPLOYMENT_MODEL_API_VERSION_SECRET="${AZURE_MODEL_DEPLOYMENT_MODEL_API_VERSION}"
+    # AZURE_MODEL_DEPLOYMENT_MODEL_NAME_SECRET_NAME="AZURE-ML-MODEL-DEPLOYMENT-MODEL-NAME" 
+    # AZURE_MODEL_DEPLOYMENT_MODEL_NAME_SECRET="${AZURE_MODEL_DEPLOYMENT_MODEL_NAME}"
+
+    # AZURE_FOUNDRY_PROJECT_ENDPOINT_SECRET_NAME="AZURE-FOUNDRY-PROJECT-ENDPOINT"
+    # AZURE_FOUNDRY_PROJECT_ENDPOINT=$(az cognitiveservices account project show -n ${AZURE_FOUNDRY_NAME} --project-name ${AZURE_FOUNDRY_PROJECT_NAME} -g ${RESOURCE_GROUP_NAME} --query properties.endpoints -o tsv)
+    # AZURE_FOUNDRY_PROJECT_ENDPOINT_SECRET="${AZURE_FOUNDRY_PROJECT_ENDPOINT}"
+
+    # updateSecretInKeyVault ${AZURE_KEY_VAULT_NAME} ${AZURE_MODEL_DEPLOYMENT_NAME_SECRET_NAME} ${AZURE_MODEL_DEPLOYMENT_NAME_SECRET} true
+    # updateSecretInKeyVault ${AZURE_KEY_VAULT_NAME} ${AZURE_MODEL_DEPLOYMENT_URI_SECRET_NAME} ${AZURE_MODEL_DEPLOYMENT_URI_SECRET} true
+    # if [ -n "${AZURE_MODEL_DEPLOYMENT_KEY_SECRET}" ] && [ "${AZURE_MODEL_DEPLOYMENT_KEY_SECRET}" != "null" ] && [ "${AZURE_MODEL_DEPLOYMENT_KEY_SECRET}" != "" ]; then
+    #     updateSecretInKeyVault ${AZURE_KEY_VAULT_NAME} ${AZURE_MODEL_DEPLOYMENT_KEY_SECRET_NAME} ${AZURE_MODEL_DEPLOYMENT_KEY_SECRET} true
+    # else
+    #     updateSecretInKeyVault ${AZURE_KEY_VAULT_NAME} ${AZURE_MODEL_DEPLOYMENT_KEY_SECRET_NAME} "null" true
+    # fi
+    # updateSecretInKeyVault ${AZURE_KEY_VAULT_NAME} ${AZURE_MODEL_DEPLOYMENT_MODEL_API_VERSION_SECRET_NAME} ${AZURE_MODEL_DEPLOYMENT_MODEL_API_VERSION_SECRET} true
+    # updateSecretInKeyVault ${AZURE_KEY_VAULT_NAME} ${AZURE_MODEL_DEPLOYMENT_MODEL_NAME_SECRET_NAME} ${AZURE_MODEL_DEPLOYMENT_MODEL_NAME_SECRET} true    
+    # updateSecretInKeyVault ${AZURE_KEY_VAULT_NAME} ${AZURE_FOUNDRY_PROJECT_ENDPOINT_SECRET_NAME} ${AZURE_FOUNDRY_PROJECT_ENDPOINT_SECRET} true
+    
+    # printProgress "Uploading notebooks to Azure Storage ${AZURE_STORAGE_ACCOUNT_NAME} ..."
+    # uploadNotebooks "${AZURE_ML_NAME}" "${AZURE_STORAGE_ACCOUNT_NAME}" "${AZURE_RESOURCE_GROUP_AZURE_AI_NAME}" "$SCRIPTS_DIRECTORY/../notebooks/deploy-model-empty.ipynb" "Users/shared/deploy-model-empty.ipynb"
+    # uploadNotebooks "${AZURE_ML_NAME}" "${AZURE_STORAGE_ACCOUNT_NAME}" "${AZURE_RESOURCE_GROUP_AZURE_AI_NAME}" "$SCRIPTS_DIRECTORY/../notebooks/evaluation-model-empty.ipynb" "Users/shared/evaluation-model-empty.ipynb"
+    # uploadNotebooks "${AZURE_ML_NAME}" "${AZURE_STORAGE_ACCOUNT_NAME}" "${AZURE_RESOURCE_GROUP_AZURE_AI_NAME}" "$SCRIPTS_DIRECTORY/../notebooks/deploy-model-opt350m.ipynb" "Users/shared/deploy-model-opt350m.ipynb"
+    # uploadNotebooks "${AZURE_ML_NAME}" "${AZURE_STORAGE_ACCOUNT_NAME}" "${AZURE_RESOURCE_GROUP_AZURE_AI_NAME}" "$SCRIPTS_DIRECTORY/../notebooks/evaluation-model-opt350m.ipynb" "Users/shared/evaluation-model-opt350m.ipynb"
+    # uploadNotebooks "${AZURE_ML_NAME}" "${AZURE_STORAGE_ACCOUNT_NAME}" "${AZURE_RESOURCE_GROUP_AZURE_AI_NAME}" "$SCRIPTS_DIRECTORY/../notebooks/deploy-model-qwen2-15b.ipynb" "Users/shared/deploy-model-qwen2-15b.ipynb"
+    # uploadNotebooks "${AZURE_ML_NAME}" "${AZURE_STORAGE_ACCOUNT_NAME}" "${AZURE_RESOURCE_GROUP_AZURE_AI_NAME}" "$SCRIPTS_DIRECTORY/../notebooks/evaluation-model-qwen2-15b.ipynb" "Users/shared/evaluation-model-qwen2-15b.ipynb"
+    # uploadNotebooks "${AZURE_ML_NAME}" "${AZURE_STORAGE_ACCOUNT_NAME}" "${AZURE_RESOURCE_GROUP_AZURE_AI_NAME}" "$SCRIPTS_DIRECTORY/../notebooks/deploy-model-smalllm.ipynb" "Users/shared/deploy-model-smalllm.ipynb"
+    # uploadNotebooks "${AZURE_ML_NAME}" "${AZURE_STORAGE_ACCOUNT_NAME}" "${AZURE_RESOURCE_GROUP_AZURE_AI_NAME}" "$SCRIPTS_DIRECTORY/../notebooks/evaluation-model-smalllm.ipynb" "Users/shared/evaluation-model-smalllm.ipynb"
+    # uploadNotebooks "${AZURE_ML_NAME}" "${AZURE_STORAGE_ACCOUNT_NAME}" "${AZURE_RESOURCE_GROUP_AZURE_AI_NAME}" "$SCRIPTS_DIRECTORY/../notebooks/evaluation-model-open-ai.ipynb" "Users/shared/evaluation-model-open-ai.ipynb"
+    # uploadNotebooks "${AZURE_ML_NAME}" "${AZURE_STORAGE_ACCOUNT_NAME}" "${AZURE_RESOURCE_GROUP_AZURE_AI_NAME}" "$SCRIPTS_DIRECTORY/../notebooks/src/score-empty.py" "Users/shared/src/score-empty.py"
+    # uploadNotebooks "${AZURE_ML_NAME}" "${AZURE_STORAGE_ACCOUNT_NAME}" "${AZURE_RESOURCE_GROUP_AZURE_AI_NAME}" "$SCRIPTS_DIRECTORY/../notebooks/src/score-opt350m.py" "Users/shared/src/score-opt350m.py"
+    # uploadNotebooks "${AZURE_ML_NAME}" "${AZURE_STORAGE_ACCOUNT_NAME}" "${AZURE_RESOURCE_GROUP_AZURE_AI_NAME}" "$SCRIPTS_DIRECTORY/../notebooks/src/score-qwen2-15b.py" "Users/shared/src/score-qwen2-15b.py"
+    # uploadNotebooks "${AZURE_ML_NAME}" "${AZURE_STORAGE_ACCOUNT_NAME}" "${AZURE_RESOURCE_GROUP_AZURE_AI_NAME}" "$SCRIPTS_DIRECTORY/../notebooks/src/score-smalllm.py" "Users/shared/src/score-smalllm.py"
+
+    updateConfigurationFile "${CONFIGURATION_FILE}" AZURE_FOUNDRY_NAME "${AZURE_FOUNDRY_NAME}"
+    updateConfigurationFile "${CONFIGURATION_FILE}" AZURE_FOUNDRY_PROJECT_NAME "${AZURE_FOUNDRY_PROJECT_NAME}"
+    updateConfigurationFile "${CONFIGURATION_FILE}" AZURE_ML_NAME "${AZURE_ML_NAME}"
+    exit 0
+fi
+
+if [ "${ACTION}" = "configure-private-vpn" ] ; then
+    cmd="az config set extension.use_dynamic_install=yes_without_prompt"
+    printProgress "$cmd"
+    eval "$cmd" 1>/dev/null 2>/dev/null || true
+    
+    VISIBILITY="pri"
+    RESOURCE_GROUP_NAME=$(getAzureAIResourceGroupName "${AZURE_ENVIRONMENT}" "${VISIBILITY}" "${AZURE_SUFFIX}")
+    DEFAULT_DEPLOYMENT_PREFIX="${AZURE_ENVIRONMENT}${VISIBILITY}${AZURE_SUFFIX}"
+
+    setAzureResourceNames ${AZURE_ENVIRONMENT} "${VISIBILITY}" "${AZURE_SUFFIX}" "${RESOURCE_GROUP_NAME}"
+    if [ "$(isdiginstalled)" = "false" ]; then
+        printProgress "Installing 'dig' command line tool"
+        installdig
+    fi      
+    if [ "$(isStoragePrivateIP "${AZURE_STORAGE_ACCOUNT_NAME}")" = "false" ]; then
+        printError "VPN connection required before configuring private Azure ML and foundry, since the storage account is not behind private endpoint. Please connect to the VPN and run the script again to configure private Azure ML and foundry."
+        exit 1
+    fi
+
+    printProgress "Configure private azure ML and foundry in resource group '${RESOURCE_GROUP_NAME}'"    
+    CLIENT_IP_ADDRESS=$(curl -s https://ifconfig.me)
+    OBJECT_ID=$(getCurrentObjectId)
+    if [ -z "${OBJECT_ID}" ] || [ "${OBJECT_ID}" = "null" ]; then
+        printError "Cannot get current user Object Id"
+        exit 1
+    fi    
+    OBJECT_TYPE=$(getCurrentObjectType)
+    DEPLOY_NAME=$(getLatestDeploymentNameInResourceGroup ${RESOURCE_GROUP_NAME} "${DEFAULT_DEPLOYMENT_PREFIX}")
+    printProgress "Read values associated with deployment '${DEPLOY_NAME}' in resource group '${RESOURCE_GROUP_NAME}'"
+    readDeploymentOutputs ${DEPLOY_NAME} ${RESOURCE_GROUP_NAME}
+
+    printProgress "Store secrets in Key Vault"
+    AZURE_ML_MODEL_EMPTY_ID_SECRET_NAME="AZURE-ML-MODEL-EMPTY-ID"
+    AZURE_ML_MODEL_EMPTY_ID_SECRET="Qwen/Qwen2-1.5B" 
+    AZURE_ML_MODEL_EMPTY_NAME_SECRET_NAME="AZURE-ML-MODEL-EMPTY-NAME"
+    AZURE_ML_MODEL_EMPTY_NAME_SECRET="empty" 
+    AZURE_ML_MODEL_EMPTY_SCORE_SCRIPT_SECRET_NAME="AZURE-ML-MODEL-EMPTY-SCORE-SCRIPT"
+    AZURE_ML_MODEL_EMPTY_SCORE_SCRIPT_SECRET="score-empty.py" 
+    AZURE_ML_MODEL_EMPTY_INSTANCE_TYPE_SECRET_NAME="AZURE-ML-MODEL-EMPTY-INSTANCE-TYPE" 
+    AZURE_ML_MODEL_EMPTY_INSTANCE_TYPE_SECRET="Standard_DS3_v2" 
+
+    updateSecretInKeyVault ${AZURE_KEY_VAULT_NAME} ${AZURE_ML_MODEL_EMPTY_ID_SECRET_NAME} ${AZURE_ML_MODEL_EMPTY_ID_SECRET} true
+    updateSecretInKeyVault ${AZURE_KEY_VAULT_NAME} ${AZURE_ML_MODEL_EMPTY_NAME_SECRET_NAME} ${AZURE_ML_MODEL_EMPTY_NAME_SECRET} true
+    updateSecretInKeyVault ${AZURE_KEY_VAULT_NAME} ${AZURE_ML_MODEL_EMPTY_SCORE_SCRIPT_SECRET_NAME} ${AZURE_ML_MODEL_EMPTY_SCORE_SCRIPT_SECRET} true
+    updateSecretInKeyVault ${AZURE_KEY_VAULT_NAME} ${AZURE_ML_MODEL_EMPTY_INSTANCE_TYPE_SECRET_NAME} ${AZURE_ML_MODEL_EMPTY_INSTANCE_TYPE_SECRET} true
+
+    AZURE_ML_MODEL_SMALLLM_ID_SECRET_NAME="AZURE-ML-MODEL-SMALLLM-ID"
+    AZURE_ML_MODEL_SMALLLM_ID_SECRET="HuggingFaceTB/SmolLM2-360M" 
+    AZURE_ML_MODEL_SMALLLM_NAME_SECRET_NAME="AZURE-ML-MODEL-SMALLLM-NAME"
+    AZURE_ML_MODEL_SMALLLM_NAME_SECRET="smalllm" 
+    AZURE_ML_MODEL_SMALLLM_SCORE_SCRIPT_SECRET_NAME="AZURE-ML-MODEL-SMALLLM-SCORE-SCRIPT"
+    AZURE_ML_MODEL_SMALLLM_SCORE_SCRIPT_SECRET="score-smalllm.py" 
+    AZURE_ML_MODEL_SMALLLM_INSTANCE_TYPE_SECRET_NAME="AZURE-ML-MODEL-SMALLLM-INSTANCE-TYPE" 
+    AZURE_ML_MODEL_SMALLLM_INSTANCE_TYPE_SECRET="Standard_DS3_v2" 
+
+    updateSecretInKeyVault ${AZURE_KEY_VAULT_NAME} ${AZURE_ML_MODEL_SMALLLM_ID_SECRET_NAME} ${AZURE_ML_MODEL_SMALLLM_ID_SECRET} true
+    updateSecretInKeyVault ${AZURE_KEY_VAULT_NAME} ${AZURE_ML_MODEL_SMALLLM_NAME_SECRET_NAME} ${AZURE_ML_MODEL_SMALLLM_NAME_SECRET} true
+    updateSecretInKeyVault ${AZURE_KEY_VAULT_NAME} ${AZURE_ML_MODEL_SMALLLM_SCORE_SCRIPT_SECRET_NAME} ${AZURE_ML_MODEL_SMALLLM_SCORE_SCRIPT_SECRET} true
+    updateSecretInKeyVault ${AZURE_KEY_VAULT_NAME} ${AZURE_ML_MODEL_SMALLLM_INSTANCE_TYPE_SECRET_NAME} ${AZURE_ML_MODEL_SMALLLM_INSTANCE_TYPE_SECRET} true
+
+    AZURE_ML_MODEL_OPT350M_ID_SECRET_NAME="AZURE-ML-MODEL-OPT350M-ID"
+    AZURE_ML_MODEL_OPT350M_ID_SECRET="facebook/opt-350m" 
+    AZURE_ML_MODEL_OPT350M_NAME_SECRET_NAME="AZURE-ML-MODEL-OPT350M-NAME"
+    AZURE_ML_MODEL_OPT350M_NAME_SECRET="opt350m" 
+    AZURE_ML_MODEL_OPT350M_SCORE_SCRIPT_SECRET_NAME="AZURE-ML-MODEL-OPT350M-SCORE-SCRIPT"
+    AZURE_ML_MODEL_OPT350M_SCORE_SCRIPT_SECRET="score-opt350m.py" 
+    AZURE_ML_MODEL_OPT350M_INSTANCE_TYPE_SECRET_NAME="AZURE-ML-MODEL-OPT350M-INSTANCE-TYPE" 
+    AZURE_ML_MODEL_OPT350M_INSTANCE_TYPE_SECRET="Standard_NC4as_T4_v3" 
+
+    updateSecretInKeyVault ${AZURE_KEY_VAULT_NAME} ${AZURE_ML_MODEL_OPT350M_ID_SECRET_NAME} ${AZURE_ML_MODEL_OPT350M_ID_SECRET} true
+    updateSecretInKeyVault ${AZURE_KEY_VAULT_NAME} ${AZURE_ML_MODEL_OPT350M_NAME_SECRET_NAME} ${AZURE_ML_MODEL_OPT350M_NAME_SECRET} true
+    updateSecretInKeyVault ${AZURE_KEY_VAULT_NAME} ${AZURE_ML_MODEL_OPT350M_SCORE_SCRIPT_SECRET_NAME} ${AZURE_ML_MODEL_OPT350M_SCORE_SCRIPT_SECRET} true
+    updateSecretInKeyVault ${AZURE_KEY_VAULT_NAME} ${AZURE_ML_MODEL_OPT350M_INSTANCE_TYPE_SECRET_NAME} ${AZURE_ML_MODEL_OPT350M_INSTANCE_TYPE_SECRET} true
+
+    AZURE_ML_MODEL_QWEN215B_ID_SECRET_NAME="AZURE-ML-MODEL-QWEN215B-ID"
+    AZURE_ML_MODEL_QWEN215B_ID_SECRET="Qwen/Qwen2-1.5B" 
+    AZURE_ML_MODEL_QWEN215B_NAME_SECRET_NAME="AZURE-ML-MODEL-QWEN215B-NAME"
+    AZURE_ML_MODEL_QWEN215B_NAME_SECRET="qwen215b" 
+    AZURE_ML_MODEL_QWEN215B_SCORE_SCRIPT_SECRET_NAME="AZURE-ML-MODEL-QWEN215B-SCORE-SCRIPT"
+    AZURE_ML_MODEL_QWEN215B_SCORE_SCRIPT_SECRET="score-qwen2-15b.py" 
+    AZURE_ML_MODEL_QWEN215B_INSTANCE_TYPE_SECRET_NAME="AZURE-ML-MODEL-QWEN215B-INSTANCE-TYPE" 
+    AZURE_ML_MODEL_QWEN215B_INSTANCE_TYPE_SECRET="Standard_NC4as_T4_v3"
+
+    updateSecretInKeyVault ${AZURE_KEY_VAULT_NAME} ${AZURE_ML_MODEL_QWEN215B_ID_SECRET_NAME} ${AZURE_ML_MODEL_QWEN215B_ID_SECRET} true
+    updateSecretInKeyVault ${AZURE_KEY_VAULT_NAME} ${AZURE_ML_MODEL_QWEN215B_NAME_SECRET_NAME} ${AZURE_ML_MODEL_QWEN215B_NAME_SECRET} true
+    updateSecretInKeyVault ${AZURE_KEY_VAULT_NAME} ${AZURE_ML_MODEL_QWEN215B_SCORE_SCRIPT_SECRET_NAME} ${AZURE_ML_MODEL_QWEN215B_SCORE_SCRIPT_SECRET} true
+    updateSecretInKeyVault ${AZURE_KEY_VAULT_NAME} ${AZURE_ML_MODEL_QWEN215B_INSTANCE_TYPE_SECRET_NAME} ${AZURE_ML_MODEL_QWEN215B_INSTANCE_TYPE_SECRET} true
+
+    AZURE_ML_MODEL_PREFIX_SECRET_NAME="AZURE-ML-MODEL-PREFIX" 
+    AZURE_ML_MODEL_PREFIX_SECRET="mdl" 
+    AZURE_ML_ENDPOINT_PREFIX_SECRET_NAME="AZURE-ML-ENDPOINT-PREFIX" 
+    AZURE_ML_ENDPOINT_PREFIX_SECRET="edp" 
+    AZURE_ML_ENV_PREFIX_SECRET_NAME="AZURE-ML-ENV-PREFIX" 
+    AZURE_ML_ENV_PREFIX_SECRET="env" 
+    AZURE_ML_SUBSCRIPTION_ID_SECRET_NAME="AZURE-ML-SUBSCRIPTION-ID" 
+    AZURE_ML_SUBSCRIPTION_ID_SECRET=${AZURE_SUBSCRIPTION_ID} 
+    AZURE_ML_RESOURCE_GROUP_SECRET_NAME="AZURE-ML-RESOURCE-GROUP" 
+    AZURE_ML_RESOURCE_GROUP_SECRET=${AZURE_RESOURCE_GROUP_AZURE_AI_NAME} 
+    AZURE_ML_WORKSPACE_NAME_SECRET_NAME="AZURE-ML-WORKSPACE-NAME"
+    AZURE_ML_WORKSPACE_NAME_SECRET=${AZURE_ML_NAME} 
+    
+    updateSecretInKeyVault ${AZURE_KEY_VAULT_NAME} ${AZURE_ML_MODEL_PREFIX_SECRET_NAME} ${AZURE_ML_MODEL_PREFIX_SECRET} true
+    updateSecretInKeyVault ${AZURE_KEY_VAULT_NAME} ${AZURE_ML_ENDPOINT_PREFIX_SECRET_NAME} ${AZURE_ML_ENDPOINT_PREFIX_SECRET} true
+    updateSecretInKeyVault ${AZURE_KEY_VAULT_NAME} ${AZURE_ML_ENV_PREFIX_SECRET_NAME} ${AZURE_ML_ENV_PREFIX_SECRET} true
+    updateSecretInKeyVault ${AZURE_KEY_VAULT_NAME} ${AZURE_ML_SUBSCRIPTION_ID_SECRET_NAME} ${AZURE_ML_SUBSCRIPTION_ID_SECRET} true
+    updateSecretInKeyVault ${AZURE_KEY_VAULT_NAME} ${AZURE_ML_RESOURCE_GROUP_SECRET_NAME} ${AZURE_ML_RESOURCE_GROUP_SECRET} true
+    updateSecretInKeyVault ${AZURE_KEY_VAULT_NAME} ${AZURE_ML_WORKSPACE_NAME_SECRET_NAME} ${AZURE_ML_WORKSPACE_NAME_SECRET} true
+
+    AZURE_MODEL_DEPLOYMENT_NAME_SECRET_NAME="AZURE-ML-MODEL-DEPLOYMENT-NAME" 
+    AZURE_MODEL_DEPLOYMENT_NAME_SECRET="${AZURE_MODEL_DEPLOYMENT_NAME}" 
+    AZURE_MODEL_DEPLOYMENT_URI_SECRET_NAME="AZURE-ML-MODEL-DEPLOYMENT-URI" 
+    AZURE_MODEL_DEPLOYMENT_URI_SECRET="${AZURE_MODEL_DEPLOYMENT_URI}" 
+    AZURE_MODEL_DEPLOYMENT_KEY_SECRET_NAME="AZURE-ML-MODEL-DEPLOYMENT-KEY" 
+    AZURE_MODEL_DEPLOYMENT_KEY_SECRET="${AZURE_MODEL_DEPLOYMENT_KEY}" 
+    AZURE_MODEL_DEPLOYMENT_MODEL_API_VERSION_SECRET_NAME="AZURE-ML-MODEL-DEPLOYMENT-MODEL-API-VERSION" 
+    AZURE_MODEL_DEPLOYMENT_MODEL_API_VERSION_SECRET="${AZURE_MODEL_DEPLOYMENT_MODEL_API_VERSION}"
+    AZURE_MODEL_DEPLOYMENT_MODEL_NAME_SECRET_NAME="AZURE-ML-MODEL-DEPLOYMENT-MODEL-NAME" 
+    AZURE_MODEL_DEPLOYMENT_MODEL_NAME_SECRET="${AZURE_MODEL_DEPLOYMENT_MODEL_NAME}"
+
+    AZURE_FOUNDRY_PROJECT_ENDPOINT_SECRET_NAME="AZURE-FOUNDRY-PROJECT-ENDPOINT"
+    AZURE_FOUNDRY_PROJECT_ENDPOINT=$(az cognitiveservices account project show -n ${AZURE_FOUNDRY_NAME} --project-name ${AZURE_FOUNDRY_PROJECT_NAME} -g ${RESOURCE_GROUP_NAME} --query properties.endpoints -o tsv)
+    AZURE_FOUNDRY_PROJECT_ENDPOINT_SECRET="${AZURE_FOUNDRY_PROJECT_ENDPOINT}"
+
+    updateSecretInKeyVault ${AZURE_KEY_VAULT_NAME} ${AZURE_MODEL_DEPLOYMENT_NAME_SECRET_NAME} ${AZURE_MODEL_DEPLOYMENT_NAME_SECRET} true
+    updateSecretInKeyVault ${AZURE_KEY_VAULT_NAME} ${AZURE_MODEL_DEPLOYMENT_URI_SECRET_NAME} ${AZURE_MODEL_DEPLOYMENT_URI_SECRET} true
+    if [ -n "${AZURE_MODEL_DEPLOYMENT_KEY_SECRET}" ] && [ "${AZURE_MODEL_DEPLOYMENT_KEY_SECRET}" != "null" ] && [ "${AZURE_MODEL_DEPLOYMENT_KEY_SECRET}" != "" ]; then
+        updateSecretInKeyVault ${AZURE_KEY_VAULT_NAME} ${AZURE_MODEL_DEPLOYMENT_KEY_SECRET_NAME} ${AZURE_MODEL_DEPLOYMENT_KEY_SECRET} true
+    else
+        updateSecretInKeyVault ${AZURE_KEY_VAULT_NAME} ${AZURE_MODEL_DEPLOYMENT_KEY_SECRET_NAME} "null" true
+    fi
+    updateSecretInKeyVault ${AZURE_KEY_VAULT_NAME} ${AZURE_MODEL_DEPLOYMENT_MODEL_API_VERSION_SECRET_NAME} ${AZURE_MODEL_DEPLOYMENT_MODEL_API_VERSION_SECRET} true
+    updateSecretInKeyVault ${AZURE_KEY_VAULT_NAME} ${AZURE_MODEL_DEPLOYMENT_MODEL_NAME_SECRET_NAME} ${AZURE_MODEL_DEPLOYMENT_MODEL_NAME_SECRET} true    
+    updateSecretInKeyVault ${AZURE_KEY_VAULT_NAME} ${AZURE_FOUNDRY_PROJECT_ENDPOINT_SECRET_NAME} ${AZURE_FOUNDRY_PROJECT_ENDPOINT_SECRET} true
+    
+    printProgress "Uploading notebooks to Azure Storage ${AZURE_STORAGE_ACCOUNT_NAME} ..."
+    uploadNotebooks "${AZURE_ML_NAME}" "${AZURE_STORAGE_ACCOUNT_NAME}" "${AZURE_RESOURCE_GROUP_AZURE_AI_NAME}" "$SCRIPTS_DIRECTORY/../notebooks/deploy-model-empty.ipynb" "Users/shared/deploy-model-empty.ipynb"
+    uploadNotebooks "${AZURE_ML_NAME}" "${AZURE_STORAGE_ACCOUNT_NAME}" "${AZURE_RESOURCE_GROUP_AZURE_AI_NAME}" "$SCRIPTS_DIRECTORY/../notebooks/evaluation-model-empty.ipynb" "Users/shared/evaluation-model-empty.ipynb"
+    uploadNotebooks "${AZURE_ML_NAME}" "${AZURE_STORAGE_ACCOUNT_NAME}" "${AZURE_RESOURCE_GROUP_AZURE_AI_NAME}" "$SCRIPTS_DIRECTORY/../notebooks/deploy-model-opt350m.ipynb" "Users/shared/deploy-model-opt350m.ipynb"
+    uploadNotebooks "${AZURE_ML_NAME}" "${AZURE_STORAGE_ACCOUNT_NAME}" "${AZURE_RESOURCE_GROUP_AZURE_AI_NAME}" "$SCRIPTS_DIRECTORY/../notebooks/evaluation-model-opt350m.ipynb" "Users/shared/evaluation-model-opt350m.ipynb"
+    uploadNotebooks "${AZURE_ML_NAME}" "${AZURE_STORAGE_ACCOUNT_NAME}" "${AZURE_RESOURCE_GROUP_AZURE_AI_NAME}" "$SCRIPTS_DIRECTORY/../notebooks/deploy-model-qwen2-15b.ipynb" "Users/shared/deploy-model-qwen2-15b.ipynb"
+    uploadNotebooks "${AZURE_ML_NAME}" "${AZURE_STORAGE_ACCOUNT_NAME}" "${AZURE_RESOURCE_GROUP_AZURE_AI_NAME}" "$SCRIPTS_DIRECTORY/../notebooks/evaluation-model-qwen2-15b.ipynb" "Users/shared/evaluation-model-qwen2-15b.ipynb"
+    uploadNotebooks "${AZURE_ML_NAME}" "${AZURE_STORAGE_ACCOUNT_NAME}" "${AZURE_RESOURCE_GROUP_AZURE_AI_NAME}" "$SCRIPTS_DIRECTORY/../notebooks/deploy-model-smalllm.ipynb" "Users/shared/deploy-model-smalllm.ipynb"
+    uploadNotebooks "${AZURE_ML_NAME}" "${AZURE_STORAGE_ACCOUNT_NAME}" "${AZURE_RESOURCE_GROUP_AZURE_AI_NAME}" "$SCRIPTS_DIRECTORY/../notebooks/evaluation-model-smalllm.ipynb" "Users/shared/evaluation-model-smalllm.ipynb"
+    uploadNotebooks "${AZURE_ML_NAME}" "${AZURE_STORAGE_ACCOUNT_NAME}" "${AZURE_RESOURCE_GROUP_AZURE_AI_NAME}" "$SCRIPTS_DIRECTORY/../notebooks/evaluation-model-open-ai.ipynb" "Users/shared/evaluation-model-open-ai.ipynb"
+    uploadNotebooks "${AZURE_ML_NAME}" "${AZURE_STORAGE_ACCOUNT_NAME}" "${AZURE_RESOURCE_GROUP_AZURE_AI_NAME}" "$SCRIPTS_DIRECTORY/../notebooks/src/score-empty.py" "Users/shared/src/score-empty.py"
+    uploadNotebooks "${AZURE_ML_NAME}" "${AZURE_STORAGE_ACCOUNT_NAME}" "${AZURE_RESOURCE_GROUP_AZURE_AI_NAME}" "$SCRIPTS_DIRECTORY/../notebooks/src/score-opt350m.py" "Users/shared/src/score-opt350m.py"
+    uploadNotebooks "${AZURE_ML_NAME}" "${AZURE_STORAGE_ACCOUNT_NAME}" "${AZURE_RESOURCE_GROUP_AZURE_AI_NAME}" "$SCRIPTS_DIRECTORY/../notebooks/src/score-qwen2-15b.py" "Users/shared/src/score-qwen2-15b.py"
+    uploadNotebooks "${AZURE_ML_NAME}" "${AZURE_STORAGE_ACCOUNT_NAME}" "${AZURE_RESOURCE_GROUP_AZURE_AI_NAME}" "$SCRIPTS_DIRECTORY/../notebooks/src/score-smalllm.py" "Users/shared/src/score-smalllm.py"
+
+    updateConfigurationFile "${CONFIGURATION_FILE}" AZURE_FOUNDRY_NAME "${AZURE_FOUNDRY_NAME}"
+    updateConfigurationFile "${CONFIGURATION_FILE}" AZURE_FOUNDRY_PROJECT_NAME "${AZURE_FOUNDRY_PROJECT_NAME}"
+    updateConfigurationFile "${CONFIGURATION_FILE}" AZURE_ML_NAME "${AZURE_ML_NAME}"
+    exit 0
+fi
+
+
+if [ "${ACTION}" = "remove-public-vpn" ] ; then
+    VISIBILITY="pub"
+    RESOURCE_GROUP_NAME=$(getAzureAIResourceGroupName "${AZURE_ENVIRONMENT}" "${VISIBILITY}" "${AZURE_SUFFIX}")
+    if [ "$(az group exists --name "${RESOURCE_GROUP_NAME}")" = "true" ]; then
+        printProgress "Remove resource group  '${RESOURCE_GROUP_NAME}' in location '${AZURE_REGION}'"
+        cmd="az group delete  -n ${RESOURCE_GROUP_NAME} -y"
+        printProgress "$cmd"
+        eval "$cmd" 1>/dev/null
+        checkError
+    else
+        printProgress "Resource group '${RESOURCE_GROUP_NAME}' doesn't exists"
+    fi
+    exit 0
+fi
+
+if [ "${ACTION}" = "remove-private-vpn" ] ; then
+    VISIBILITY="pri"
+    RESOURCE_GROUP_NAME=$(getAzureAIResourceGroupName "${AZURE_ENVIRONMENT}" "${VISIBILITY}" "${AZURE_SUFFIX}")
+    if [ "$(az group exists --name "${RESOURCE_GROUP_NAME}")" = "true" ]; then
+        printProgress "Remove resource group  '${RESOURCE_GROUP_NAME}' in location '${AZURE_REGION}'"
+        cmd="az group delete  -n ${RESOURCE_GROUP_NAME} -y"
+        printProgress "$cmd"
+        eval "$cmd" 1>/dev/null
+        checkError
+    else
+        printProgress "Resource group '${RESOURCE_GROUP_NAME}' doesn't exists"
+    fi
+    exit 0
+fi
+
