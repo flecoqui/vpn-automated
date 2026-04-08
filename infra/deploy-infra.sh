@@ -163,25 +163,15 @@ setAzureResourceNames()
 
     AZURE_STORAGE_ACCOUNT_NAME=$(echo ${RESULT}  | jq -r '.storageAccountName.value' 2>/dev/null)
     echo "AZURE_STORAGE_ACCOUNT_NAME: $AZURE_STORAGE_ACCOUNT_NAME"
-    AZURE_STORAGE_BLOB_URI=$(echo ${RESULT}  | jq -r '.storageBlobUri.value' 2>/dev/null)
-    echo "AZURE_STORAGE_BLOB_URI: $AZURE_STORAGE_BLOB_URI"
-    AZURE_STORAGE_FILE_URI=$(echo ${RESULT}  | jq -r '.storageFileUri.value' 2>/dev/null)
-    echo "AZURE_STORAGE_FILE_URI: $AZURE_STORAGE_FILE_URI"
-    AZURE_STORAGE_DFS_URI=$(echo ${RESULT}  | jq -r '.storageDfsUri.value' 2>/dev/null)
-    echo "AZURE_STORAGE_DFS_URI: $AZURE_STORAGE_DFS_URI"
 
     AZURE_STORAGE_ACCOUNT_DEFAULT_CONTAINER_NAME=$(echo ${RESULT}  | jq -r '.storageAccountDefaultContainerName.value' 2>/dev/null)
     echo "AZURE_STORAGE_ACCOUNT_DEFAULT_CONTAINER_NAME: $AZURE_STORAGE_ACCOUNT_DEFAULT_CONTAINER_NAME"    
     AZURE_KEY_VAULT_NAME=$(echo ${RESULT}  | jq -r '.keyVaultName.value' 2>/dev/null)
     echo "AZURE_KEY_VAULT_NAME: $AZURE_KEY_VAULT_NAME"
-    AZURE_KEY_VAULT_URI=$(echo ${RESULT}  | jq -r '.keyVaultUri.value' 2>/dev/null)
-    echo "AZURE_KEY_VAULT_URI: $AZURE_KEY_VAULT_URI"
 
 
     AZURE_ACR_NAME=$(echo ${RESULT}  | jq -r '.acrName.value' 2>/dev/null)
     echo "AZURE_ACR_NAME: $AZURE_ACR_NAME"
-    AZURE_ACR_LOGIN_SERVER=$(echo ${RESULT}  | jq -r '.acrLoginServer.value' 2>/dev/null)
-    echo "AZURE_ACR_LOGIN_SERVER: $AZURE_ACR_LOGIN_SERVER"
 
     AZURE_APP_INSIGHTS_NAME=$(echo ${RESULT}  | jq -r '.appInsightsName.value' 2>/dev/null)
     echo "AZURE_APP_INSIGHTS_NAME: $AZURE_APP_INSIGHTS_NAME"
@@ -534,7 +524,7 @@ installdig() {
 isPrivateIP() {
     hostname="$1"    
 
-    dig +short "${hostname}" | grep -E '^(10\.|172\.(1[6-9]|2[0-9]|3[0-1])\.|192\.168\.)' && echo "true" || echo "false"
+    dig +short "${hostname}" | grep -qE '^(10\.|172\.(1[6-9]|2[0-9]|3[0-1])\.|192\.168\.)' && echo "true" || echo "false"
 }
 
 ##############################################################################
@@ -1041,7 +1031,6 @@ if [ "${ACTION}" = "deploy-private-vpn" ] ; then
     checkError
     readDeploymentOutputs ${DEPLOY_NAME} ${RESOURCE_GROUP_NAME}
 
-
     updateConfigurationFile "${CONFIGURATION_FILE}" AZURE_STORAGE_ACCOUNT_NAME "${AZURE_STORAGE_ACCOUNT_NAME}"
     updateConfigurationFile "${CONFIGURATION_FILE}" AZURE_KEY_VAULT_NAME "${AZURE_KEY_VAULT_NAME}"
     updateConfigurationFile "${CONFIGURATION_FILE}" AZURE_ACR_NAME "${AZURE_ACR_NAME}"
@@ -1058,6 +1047,8 @@ if [ "${ACTION}" = "configure-private-vpn" ] ; then
     DEFAULT_DEPLOYMENT_PREFIX="${AZURE_ENVIRONMENT}${VISIBILITY}${AZURE_SUFFIX}"
 
     setAzureResourceNames ${AZURE_ENVIRONMENT} "${VISIBILITY}" "${AZURE_SUFFIX}" "${RESOURCE_GROUP_NAME}"
+    readDeploymentOutputs ${DEPLOY_NAME} ${RESOURCE_GROUP_NAME}
+
     if [ "$(isdiginstalled)" = "false" ]; then
         printProgress "Installing 'dig' command line tool"
         installdig
@@ -1079,11 +1070,90 @@ if [ "${ACTION}" = "configure-private-vpn" ] ; then
     printProgress "Read values associated with deployment '${DEPLOY_NAME}' in resource group '${RESOURCE_GROUP_NAME}'"
     readDeploymentOutputs ${DEPLOY_NAME} ${RESOURCE_GROUP_NAME}
 
-    printProgress "Store secrets in Key Vault"
-    updateSecretInKeyVault ${AZURE_KEY_VAULT_NAME} ${AZURE_ML_MODEL_EMPTY_ID_SECRET_NAME} ${AZURE_ML_MODEL_EMPTY_ID_SECRET} true
+    printProgress "Testing access to Key Vault: ${AZURE_KEY_VAULT_NAME}"
+    updateSecretInKeyVault ${AZURE_KEY_VAULT_NAME} "testsecret" "testsecretvalue" true
+    value=$(readSecretInKeyVault ${AZURE_KEY_VAULT_NAME} "testsecret" true)
+    printProgress "Read secret from Key Vault: ${value}"
+    if [ "$value" != "testsecretvalue" ]; then
+        printError "Failed to read/write secret in Key Vault, value read: ${value}"
+    else
+        printMessage "Successfully read/write secret in Key Vault"
+    fi
+    TEMPDIR=$(mktemp -d)
+    printProgress "Uploading file to Azure Storage ${AZURE_STORAGE_ACCOUNT_NAME} ..."
+    uploadFile "${AZURE_STORAGE_ACCOUNT_NAME}" "${AZURE_STORAGE_ACCOUNT_DEFAULT_CONTAINER_NAME}"  "$SCRIPTS_DIRECTORY/data/testdata.csv" "data/testdata.csv"
+    downloadFile "${AZURE_STORAGE_ACCOUNT_NAME}" "${AZURE_STORAGE_ACCOUNT_DEFAULT_CONTAINER_NAME}" "data/testdata.csv" "${TEMPDIR}/testdata.csv" 
+
+    if cmp -s "$SCRIPTS_DIRECTORY/data/testdata.csv" "${TEMPDIR}/testdata.csv" ; then
+        printMessage "Files are identical, successfully read/write file in Azure Storage"
+    else
+        printError "Files differ, failed to read/write file in Azure Storage"
+    fi
+
+    printProgress "Pushing and Pulling container image to Azure Container Registry ${AZURE_ACR_NAME} ..."
+    cmd="az acr login --name ${AZURE_ACR_NAME}"
+    printProgress "$cmd"
+    eval "$cmd"
+    pushImage "${DEFAULT_CONTAINER_IMAGE}" "${AZURE_ACR_LOGIN_SERVER}"
+    pullImage "${DEFAULT_CONTAINER_IMAGE}" "${AZURE_ACR_LOGIN_SERVER}"
+    sourceImageName="${DEFAULT_CONTAINER_IMAGE##*/}"
+
+    if [ "$(docker images -q ${AZURE_ACR_LOGIN_SERVER}/${sourceImageName} 2> /dev/null)" = "" ]; then
+        printError "Failed to pull image from Azure Container Registry ${AZURE_ACR_NAME}"
+    else
+        printMessage "Successfully pushed and pulled container image in Azure Container Registry"
+    fi
+
+    printProgress "Key Vault API hostname: $(getHostname $AZURE_KEY_VAULT_URI)"
+    printProgress "Container Regsitry hostname: $AZURE_ACR_LOGIN_SERVER"
+    printProgress "Blob API hostname: $(getHostname $AZURE_STORAGE_BLOB_URI)"
+    printProgress "File API hostname: $(getHostname $AZURE_STORAGE_FILE_URI)"
+    printProgress "DFS API hostname: $(getHostname $AZURE_STORAGE_DFS_URI)"
     
-    printProgress "Uploading notebooks to Azure Storage ${AZURE_STORAGE_ACCOUNT_NAME} ..."
-    uploadFile "${AZURE_ML_NAME}" "${AZURE_STORAGE_ACCOUNT_NAME}" "${AZURE_RESOURCE_GROUP_AZURE_AI_NAME}" "$SCRIPTS_DIRECTORY/../notebooks/deploy-model-empty.ipynb" "Users/shared/deploy-model-empty.ipynb"
+    # Install dig tool if not exist for DNS resolution check
+    if [ "$(isdiginstalled)" = "false" ]; then  
+        installdig
+    fi
+
+    key_vault_hostname=$(getHostname $AZURE_KEY_VAULT_URI)
+    if [ "$(isPrivateIP $key_vault_hostname)" = "true" ]; then
+        printMessage "Key Vault Hostname ${key_vault_hostname} is a private IP"
+    else
+        printError "Key Vault Hostname ${key_vault_hostname} is not a private IP"
+        exit 1
+    fi
+
+    acr_hostname=$AZURE_ACR_LOGIN_SERVER
+    if [ "$(isPrivateIP $acr_hostname)" = "true" ]; then
+        printMessage "Container Registry Hostname ${acr_hostname} is a private IP"
+    else
+        printError "Container Registry Hostname ${acr_hostname} is not a private IP"
+        exit 1
+    fi
+
+    blob_api_hostname=$(getHostname $AZURE_STORAGE_BLOB_URI)
+    if [ "$(isPrivateIP $blob_api_hostname)" = "true" ]; then
+        printMessage "Blob API Hostname ${blob_api_hostname} is a private IP"
+    else
+        printError "Blob API Hostname ${blob_api_hostname} is not a private IP"
+        exit 1
+    fi
+
+    file_api_hostname=$(getHostname $AZURE_STORAGE_FILE_URI)
+    if [ "$(isPrivateIP $file_api_hostname)" = "true" ]; then
+        printMessage "File API Hostname ${file_api_hostname} is a private IP"
+    else
+        printError "File API Hostname ${file_api_hostname} is not a private IP"
+        exit 1
+    fi
+
+    dfs_api_hostname=$(getHostname $AZURE_STORAGE_DFS_URI)
+    if [ "$(isPrivateIP $dfs_api_hostname)" = "true" ]; then
+        printMessage "DFS API Hostname ${dfs_api_hostname} is a private IP"
+    else
+        printError "DFS API Hostname ${dfs_api_hostname} is not a private IP"
+        exit 1
+    fi
 
     updateConfigurationFile "${CONFIGURATION_FILE}" AZURE_STORAGE_ACCOUNT_NAME "${AZURE_STORAGE_ACCOUNT_NAME}"
     updateConfigurationFile "${CONFIGURATION_FILE}" AZURE_KEY_VAULT_NAME "${AZURE_KEY_VAULT_NAME}"

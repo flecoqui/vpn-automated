@@ -83,10 +83,6 @@ var privateDnsNames = [
   'privatelink.file.${environment().suffixes.storage}'
   'privatelink.dfs.${environment().suffixes.storage}'
   'privatelink.azurecr.io'
-  'privatelink.api.azureml.ms'
-  'privatelink.notebooks.azure.net'
-  'privatelink.cognitiveservices.azure.com'
-  'privatelink.openai.azure.com'
 ]
 
 // Defining Private DNS Zones resource group and subscription id
@@ -99,10 +95,6 @@ var filePrivateDnsZoneId = resourceId(calcDnsZoneSubscriptionId, calcDnsZoneReso
 var dfsPrivateDnsZoneId = resourceId(calcDnsZoneSubscriptionId, calcDnsZoneResourceGroupName, 'Microsoft.Network/privateDnsZones', 'privatelink.dfs.${environment().suffixes.storage}') 
 var acrPrivateDnsZoneId = resourceId(calcDnsZoneSubscriptionId, calcDnsZoneResourceGroupName, 'Microsoft.Network/privateDnsZones', 'privatelink.azurecr.io')
 var keyVaultPrivateDnsZoneId = resourceId(calcDnsZoneSubscriptionId, calcDnsZoneResourceGroupName, 'Microsoft.Network/privateDnsZones', 'privatelink.vaultcore.azure.net')
-var azmlApiPrivateDnsZoneId = resourceId(calcDnsZoneSubscriptionId, calcDnsZoneResourceGroupName, 'Microsoft.Network/privateDnsZones', 'privatelink.api.azureml.ms')
-var azmlNotebooksPrivateDnsZoneId = resourceId(calcDnsZoneSubscriptionId, calcDnsZoneResourceGroupName, 'Microsoft.Network/privateDnsZones', 'privatelink.notebooks.azure.net')
-var cognitiveServicesPrivateDnsZoneId = resourceId(calcDnsZoneSubscriptionId, calcDnsZoneResourceGroupName, 'Microsoft.Network/privateDnsZones', 'privatelink.cognitiveservices.azure.com')
-var openAiPrivateDnsZoneId = resourceId(calcDnsZoneSubscriptionId, calcDnsZoneResourceGroupName, 'Microsoft.Network/privateDnsZones', 'privatelink.openai.azure.com')
 
 module dnsZoneModule './private-dns-zones.bicep' = if (newOrExistingDnsZones == 'new') {
   name: 'dnsZoneDeploy'

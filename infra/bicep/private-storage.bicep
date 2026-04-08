@@ -43,9 +43,7 @@ param tags object
 
 // https://docs.microsoft.com/azure/role-based-access-control/built-in-roles#storage-blob-data-contributor
 var roleStorageBlobDataContributor = 'ba92f5b4-2d11-453d-a403-e96b0029c9fe'
-var roleStorageBlobDataReader='2a2b9908-6ea1-4ae2-8e65-a410df84e7d1'
 var roleStorageFilePrivilegedContributor='69566ab7-960f-475b-8e7c-b3118f30c6bd'
-var roleStorageFileReader='b8eda974-7b85-4f76-af95-65846b26df6d'
 var roleStorageFileSMBShareContributor = '0c867c2a-1d8c-454a-a3db-ab2ea1bdc8bb'
 
 var privateSubnetId = '${resourceId(vnetResourceGroupName,'Microsoft.Network/virtualNetworks', vnetName)}/subnets/${subnetName}'
