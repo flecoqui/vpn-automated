@@ -7,9 +7,6 @@ param storageAccountName string
 @description('The name of the storage account default container.')
 param defaultContainerName string
 
-@description('The Foundry account principal ID.')
-param foundryPrincipalId string = ''
-
 @description('The user object Id of the user or service principal running the script.')
 param objectId string = ''
 
@@ -24,9 +21,7 @@ param tags object
 
 // https://docs.microsoft.com/azure/role-based-access-control/built-in-roles#storage-blob-data-contributor
 var roleStorageBlobDataContributor = 'ba92f5b4-2d11-453d-a403-e96b0029c9fe'
-var roleStorageBlobDataReader='2a2b9908-6ea1-4ae2-8e65-a410df84e7d1'
 var roleStorageFilePrivilegedContributor='69566ab7-960f-475b-8e7c-b3118f30c6bd'
-var roleStorageFileReader='b8eda974-7b85-4f76-af95-65846b26df6d'
 var roleStorageFileSMBShareContributor = '0c867c2a-1d8c-454a-a3db-ab2ea1bdc8bb'
 
 
@@ -70,26 +65,6 @@ resource storageFileSystem 'Microsoft.Storage/storageAccounts/blobServices/conta
 }
 
 
-resource storageBlobRoleAssignment1 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
-  name: guid(storageAccount.id, foundryPrincipalId, roleStorageBlobDataReader)
-  scope: storageAccount
-  properties: {
-    roleDefinitionId: subscriptionResourceId('Microsoft.Authorization/roleDefinitions', roleStorageBlobDataReader)
-    principalId: foundryPrincipalId
-    principalType: 'ServicePrincipal'
-  }
-}
-
-resource storageFileRoleAssignment1 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
-  name: guid(storageAccount.id, foundryPrincipalId, roleStorageFileReader)
-  scope: storageAccount
-  properties: {
-    roleDefinitionId: subscriptionResourceId('Microsoft.Authorization/roleDefinitions', roleStorageFileReader)
-    principalId: foundryPrincipalId
-    principalType: 'ServicePrincipal'
-  }
-}
-
 resource storageBlobRoleAssignment2 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
   name: guid(storageAccount.id, objectId, roleStorageBlobDataContributor)
   scope: storageAccount
@@ -123,3 +98,6 @@ resource storageFilePrivilegedContributorRoleAssignment 'Microsoft.Authorization
 output outStorageAccountName string = storageAccount.name
 output outStorageFilesysName string = storageFileSystem.name
 output outStorageAccountId string = storageAccount.id
+output outStorageBlobUri string = storageAccount.properties.primaryEndpoints.blob
+output outStorageFileUri string = storageAccount.properties.primaryEndpoints.file
+output outStorageDfsUri string = storageAccount.properties.primaryEndpoints.dfs

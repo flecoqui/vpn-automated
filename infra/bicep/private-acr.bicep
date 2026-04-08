@@ -8,6 +8,12 @@ param baseName string
 @description('The name of the Azure Container Registry.')
 param acrName string
 
+@description('The user object Id of the user or service principal running the script.')
+param objectId string = ''
+
+@description('The  object type User or ServicePrincipal.')
+param objectType string = 'User'
+
 @description('The name of the virtual network for virtual network integration.')
 param vnetName string
 
@@ -71,6 +77,29 @@ resource acrPrivateEndpoint 'Microsoft.Network/privateEndpoints@2021-03-01' = {
         }
       ]
     }
+  }
+}
+
+var acrPullRoleDefinitionId = subscriptionResourceId('Microsoft.Authorization/roleDefinitions', '7f951dda-4ed3-4680-a7ca-43fe172d538d')
+var acrPushRoleDefinitionId = subscriptionResourceId('Microsoft.Authorization/roleDefinitions', '8311e382-0749-4cb8-b61a-304f252e45ec')
+
+resource acrPullRoleAssignment 'Microsoft.Authorization/roleAssignments@2022-04-01' = if (!empty(objectId)) {
+  name: guid(acr.id, objectId, acrPullRoleDefinitionId)
+  scope: acr
+  properties: {
+    roleDefinitionId: acrPullRoleDefinitionId
+    principalId: objectId
+    principalType: objectType
+  }
+}
+
+resource acrPushRoleAssignment 'Microsoft.Authorization/roleAssignments@2022-04-01' = if (!empty(objectId)) {
+  name: guid(acr.id, objectId, acrPushRoleDefinitionId)
+  scope: acr
+  properties: {
+    roleDefinitionId: acrPushRoleDefinitionId
+    principalId: objectId
+    principalType: objectType
   }
 }
 

@@ -195,11 +195,13 @@ Usually this step is not required in a pipeline as the connection with Azure is 
         var baseName = toLower('${environment}${visibility}${suffix}')
 
         output acrName string = 'acr${baseName}'
+        output appInsightsName string = 'appi${baseName}'
         output vnetName string = 'vnet${baseName}'
         output storageAccountName string = 'st${baseName}'
         output storageAccountDefaultContainerName string = 'test${baseName}'
         output keyVaultName string = 'kv${baseName}'
         output privateEndpointSubnetName string = 'snet${baseName}pe'
+        output datagwSubnetName string = 'snet${baseName}dtgw'
         output vpnGatewayName string = 'vnetvpngateway${baseName}'
         output vpnGatewayPublicIpName string = 'vnetvpngatewaypip${baseName}'
         output dnsResolverName string = 'vnetdnsresolver${baseName}'
@@ -209,7 +211,7 @@ Usually this step is not required in a pipeline as the connection with Azure is 
         output gatewaySubnetName string = 'GatewaySubnet'
         output dnsDelegationSubNetName string = 'DNSDelegationSubnet'
         output baseName string = baseName
-        output resourceGroupAzureAIName string = 'rgazureai${baseName}'
+        output resourceGroupAzureAIName string = 'rgvpn${baseName}'
     ```
 
 #### Deploying Azure Key Vault, Azure Storage Account and Azure Container Registry with public endpoint
@@ -225,7 +227,7 @@ Usually this step is not required in a pipeline as the connection with Azure is 
    
 
     ```bash
-        vscode ➜ /workspaces/vpn-automated (main) $ cat ./.config/.default.env
+        vscode ➜ /workspaces/vpn-automated (main) $ cat ./.default.env
         AZURE_REGION=westus3
         AZURE_SUBSCRIPTION_ID=to-be-completed
         AZURE_TENANT_ID=to-be-completed

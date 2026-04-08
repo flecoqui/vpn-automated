@@ -117,3 +117,4 @@ resource keyVaultPrivateEndpoint 'Microsoft.Network/privateEndpoints@2021-03-01'
 
 output outKeyVaultName string = keyVault.name
 output outKeyVaultId string = keyVault.id
+output outKeyVaultUri string = keyVault.properties.vaultUri

@@ -68,3 +68,4 @@ resource keyVaultCertificateRoleAssignment 'Microsoft.Authorization/roleAssignme
 
 output outKeyVaultName string = keyVault.name
 output outKeyVaultId string = keyVault.id
+output outKeyVaultUri string = keyVault.properties.vaultUri

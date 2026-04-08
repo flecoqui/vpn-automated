@@ -195,6 +195,8 @@ module containerRegistryModule 'private-acr.bicep' = {
     baseName: baseName
     acrName: namingModule.outputs.acrName
     vnetName: networkModule.outputs.outVnetName
+    objectId: objectId
+    objectType: objectType    
     subnetName: networkModule.outputs.outPrivateEndpointSubnetName
     vnetResourceGroupName: calcDnsZoneResourceGroupName
     acrPrivateDnsZoneId: acrPrivateDnsZoneId
@@ -224,3 +226,9 @@ output keyVaultName string = keyVaultModule.outputs.outKeyVaultName
 output acrName string = containerRegistryModule.outputs.outAcrName 
 output appInsightsName string = appInsightsModule.outputs.outAppInsightsName
 output storageAccountName string = storageModule.outputs.outStorageAccountName
+
+output keyVaultUri string = keyVaultModule.outputs.outKeyVaultUri
+output acrLoginServer string = containerRegistryModule.outputs.outAcrLoginServer
+output storageBlobUri string = storageModule.outputs.outStorageBlobUri
+output storageFileUri string = storageModule.outputs.outStorageFileUri
+output storageDfsUri string = storageModule.outputs.outStorageDfsUri

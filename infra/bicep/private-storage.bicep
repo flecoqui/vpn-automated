@@ -229,3 +229,6 @@ resource storageFilePrivilegedContributorRoleAssignment 'Microsoft.Authorization
 output outStorageAccountName string = storageAccount.name
 output outStorageAccountId string = storageAccount.id
 output outStorageFilesysName string = storageFileSystem.name
+output outStorageBlobUri string = storageAccount.properties.primaryEndpoints.blob
+output outStorageFileUri string = storageAccount.properties.primaryEndpoints.file
+output outStorageDfsUri string = storageAccount.properties.primaryEndpoints.dfs

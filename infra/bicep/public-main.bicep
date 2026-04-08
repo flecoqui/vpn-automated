@@ -60,7 +60,6 @@ module storageModule 'public-storage.bicep' = {
     storageAccountName: namingModule.outputs.storageAccountName
     defaultContainerName: namingModule.outputs.storageAccountDefaultContainerName
     clientIpAddress: clientIpAddress
-    foundryPrincipalId: foundryModule.outputs.foundryPrincipalId
     objectId: objectId
     objectType: objectType
     tags: tags
@@ -73,6 +72,8 @@ module containerRegistryModule 'public-acr.bicep' = {
   params: {
     location: location
     acrName: namingModule.outputs.acrName
+    objectId: objectId
+    objectType: objectType    
     tags: tags
   }
 }
@@ -89,6 +90,12 @@ module appInsightsModule 'public-appInsights.bicep' = {
 }
 
 output keyVaultName string = keyVaultModule.outputs.outKeyVaultName
+output keyVaultId string = keyVaultModule.outputs.outKeyVaultId
+output keyVaultUri string = keyVaultModule.outputs.outKeyVaultUri
 output acrName string = containerRegistryModule.outputs.outAcrName 
+output acrLoginServer string = containerRegistryModule.outputs.outAcrLoginServer
 output appInsightsName string = appInsightsModule.outputs.outAppInsightsName
 output storageAccountName string = storageModule.outputs.outStorageAccountName
+output storageBlobUri string = storageModule.outputs.outStorageBlobUri
+output storageFileUri string = storageModule.outputs.outStorageFileUri
+output storageDfsUri string = storageModule.outputs.outStorageDfsUri
