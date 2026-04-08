@@ -296,8 +296,11 @@ Usually this step is not required in a pipeline as the connection with Azure is 
 
 9. Click on the 'Connect' button, you'll need to enter your tenant credentials to establish a connection with the virtual network.
 
-10. Once you are connected through the VPN session, you'll have to copy the notebook files and scoring files on the Azure Storage and store the configuration in Azure Key Vault. As both the Azure Storage and Azure Key Vault are connected to the VNET, the VPN connection is mandatry for the subsequent steps.
+10. Once you are connected through the VPN session, you can configure the private vpn infratructure and test the access to the services through the private endpoints using the command line below:
 
+    ```bash
+        vscode ➜ /workspaces/vpn-automated (main) $ ./infra/deploy-infra.sh   -a configure-private-vpn
+    ```
 
 ##### Removing the private resources
 

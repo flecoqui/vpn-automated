@@ -203,6 +203,10 @@ ca   /etc/openvpn/server/ca.crt
 cert /etc/openvpn/server/server.crt
 key  /etc/openvpn/server/server.key
 
+# Use ECDH (no DH params file needed)
+dh none
+ecdh-curve prime256v1
+
 # Extra TLS protection key
 tls-auth /etc/openvpn/server/ta.key 0
 
