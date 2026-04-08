@@ -2,7 +2,7 @@
 ##########################################################################################################################################################################################
 #- Purpose: Script used to install pre-requisites, deploy/undeploy service, start/stop service, test service
 #- Parameters are:
-#- [-a] ACTION - value: azure-login, deploy-public-vpn, deploy-private-vpn, configure-private-vpn,remove-public-vpn, remove-private-vpn
+#- [-a] ACTION - value: azure-login, deploy-public-vpn, deploy-private-vpn, configure-private-vpn, deploy-private-custom-vpn, remove-public-vpn, remove-private-vpn
 #- [-e] environment - "dev", "stag", "preprod", "prod"
 #- [-c] Sets the configuration file
 #- [-t] Sets deployment Azure Tenant Id
@@ -66,7 +66,7 @@ printProgress(){
 usage() {
     echo
     echo "Arguments:"
-    printf " -a  Sets deploy-infra ACTION { azure-login, deploy-public-vpn, deploy-private-vpn, configure-private-vpn,remove-public-vpn, remove-private-vpn }\n"
+    printf " -a  Sets deploy-infra ACTION { azure-login, deploy-public-vpn, deploy-private-vpn, deploy-private-custom-vpn, configure-private-vpn,remove-public-vpn, remove-private-vpn }\n"
     printf " -e  Sets the environment - by default 'dev' ('dev', 'test', 'stag', 'prep', 'prod')\n"
     printf " -s  Sets subscription id \n"
     printf " -t  Sets tenant id\n"
@@ -769,10 +769,11 @@ fi
 if [ "${ARG_ACTION}" != "deploy-public-vpn" ] && \
    [ "${ARG_ACTION}" != "azure-login" ] && \
    [ "${ARG_ACTION}" != "deploy-private-vpn" ] && \
+   [ "${ARG_ACTION}" != "deploy-private-custom-vpn" ] && \
    [ "${ARG_ACTION}" != "configure-private-vpn" ] && \
    [ "${ARG_ACTION}" != "remove-public-vpn" ] && \
    [ "${ARG_ACTION}" != "remove-private-vpn" ]; then
-    printError "ACTION '${ARG_ACTION}' not supported, possible values: deploy-public-vpn, deploy-private-vpn, configure-private-vpn, remove-public-vpn, remove-private-vpn  "
+    printError "ACTION '${ARG_ACTION}' not supported, possible values: deploy-public-vpn, deploy-private-vpn, deploy-private-custom-vpn, configure-private-vpn, remove-public-vpn, remove-private-vpn  "
     usage
     exit 1
 fi
@@ -1036,6 +1037,82 @@ if [ "${ACTION}" = "deploy-private-vpn" ] ; then
     updateConfigurationFile "${CONFIGURATION_FILE}" AZURE_ACR_NAME "${AZURE_ACR_NAME}"
     exit 0
 fi
+
+if [ "${ACTION}" = "deploy-private-custom-vpn" ] ; then
+    cmd="az config set extension.use_dynamic_install=yes_without_prompt"
+    printProgress "$cmd"
+    eval "$cmd" 1>/dev/null 2>/dev/null || true
+
+    VISIBILITY="pri"
+    RESOURCE_GROUP_NAME=$(getVPNResourceGroupName "${AZURE_ENVIRONMENT}" "${VISIBILITY}" "${AZURE_SUFFIX}")
+    if [ "$(az group exists --name "${RESOURCE_GROUP_NAME}")" = "false" ]; then
+        printProgress "Create resource group  '${RESOURCE_GROUP_NAME}' in location '${AZURE_REGION}'"
+        cmd="az group create -l ${AZURE_REGION} -n ${RESOURCE_GROUP_NAME}"
+        printProgress "$cmd"
+        eval "$cmd" 1>/dev/null
+        if [ -z "${AZURE_SUFFIX+x}" ] || [ "${AZURE_SUFFIX}" = "" ]; then
+            SUFFIX=$(shuf -i 1000-9999 -n 1)
+            updateConfigurationFile "${CONFIGURATION_FILE}" AZURE_SUFFIX "${SUFFIX}"
+            AZURE_SUFFIX="${SUFFIX}"
+        fi
+        checkError
+    else
+        printProgress "Resource group '${RESOURCE_GROUP_NAME}' already exists"
+    fi
+    DEFAULT_DEPLOYMENT_PREFIX="${AZURE_ENVIRONMENT}${VISIBILITY}${AZURE_SUFFIX}"
+
+    setAzureResourceNames ${AZURE_ENVIRONMENT} "${VISIBILITY}" "${AZURE_SUFFIX}" "${RESOURCE_GROUP_NAME}"
+    printProgress "Deploy private key Vault, Storage and registry in resource group '${RESOURCE_GROUP_NAME}'"
+    
+    CLIENT_IP_ADDRESS=$(curl -s https://ifconfig.me)
+    OBJECT_ID=$(getCurrentObjectId)
+    if [ -z "${OBJECT_ID}" ] || [ "${OBJECT_ID}" = "null" ]; then
+        printError "Cannot get current user Object Id"
+        exit 1
+    fi
+    if [ -f ~/.ssh/vm-gateway ] && [ -f ~/.ssh/vm-gateway.pub ]; then
+        printProgress "SSH key for VM gateway already exists"
+    else
+        printProgress "Generating SSH key for VM gateway..."
+        ssh-keygen -t rsa -b 4096 -f ~/.ssh/vm-gateway -N ""
+    fi
+    PUBLIC_KEY=$(cat ~/.ssh/vm-gateway.pub)
+
+    OBJECT_TYPE=$(getCurrentObjectType)
+
+    DEPLOY_NAME=$(date +"${DEFAULT_DEPLOYMENT_PREFIX}-%y%m%d%H%M%S")
+    cmd="az deployment group create --resource-group $RESOURCE_GROUP_NAME --name ${DEPLOY_NAME} \
+    --template-file $SCRIPTS_DIRECTORY/bicep/private-main-custom.bicep \
+    --parameters \
+    location=${AZURE_REGION} \
+    env=${AZURE_ENVIRONMENT} \
+    visibility=${VISIBILITY} \
+    suffix=${AZURE_SUFFIX} \
+    vmAdminUsername=\"azureuser\" \
+    vmAdminSshPublicKey=\"${PUBLIC_KEY}\" \
+    vnetAddressPrefix=\"10.13.0.0/16\" \
+    privateEndpointSubnetAddressPrefix=\"10.13.0.0/24\" \
+    bastionSubnetAddressPrefix=\"10.13.1.0/24\" \
+    datagwSubnetAddressPrefix=\"10.13.2.0/24\" \
+    gatewaySubnetAddressPrefix=\"10.13.3.0/24\" \
+    dnsDelegationSubnetAddressPrefix=\"10.13.4.0/24\" \
+    dnsDelegationSubnetIPAddress=\"10.13.4.22\" \
+    dnsZoneResourceGroupName=\"${RESOURCE_GROUP_NAME}\" \
+    dnsZoneSubscriptionId=\"${AZURE_SUBSCRIPTION_ID}\" \
+    newOrExistingDnsZones=\"new\" \
+    objectId=\"${OBJECT_ID}\"  objectType=\"${OBJECT_TYPE}\" clientIpAddress=\"${CLIENT_IP_ADDRESS}\" \
+     --verbose"
+    printProgress "$cmd"
+    eval "$cmd"
+    checkError
+    readDeploymentOutputs ${DEPLOY_NAME} ${RESOURCE_GROUP_NAME}
+
+    updateConfigurationFile "${CONFIGURATION_FILE}" AZURE_STORAGE_ACCOUNT_NAME "${AZURE_STORAGE_ACCOUNT_NAME}"
+    updateConfigurationFile "${CONFIGURATION_FILE}" AZURE_KEY_VAULT_NAME "${AZURE_KEY_VAULT_NAME}"
+    updateConfigurationFile "${CONFIGURATION_FILE}" AZURE_ACR_NAME "${AZURE_ACR_NAME}"
+    exit 0
+fi
+
 
 if [ "${ACTION}" = "configure-private-vpn" ] ; then
     cmd="az config set extension.use_dynamic_install=yes_without_prompt"
