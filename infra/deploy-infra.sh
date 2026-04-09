@@ -1135,16 +1135,16 @@ if [ "${ACTION}" = "deploy-private-custom-vpn" ] ; then
 
     printProgress "Copying install.sh and gen-client.sh to VM..."
     scp -i ~/.ssh/vm-gateway -o StrictHostKeyChecking=no \
-        "$SCRIPTS_DIRECTORY/scripts/install.sh" \
+    #    "$SCRIPTS_DIRECTORY/scripts/install.sh" \
         "$SCRIPTS_DIRECTORY/scripts/gen-client.sh" \
         azureuser@${AZURE_VPN_GATEWAY_PUBLIC_IP}:/tmp/
     checkError
 
-    printProgress "Running install.sh on VM (this takes ~2 minutes)..."
-    ssh -i ~/.ssh/vm-gateway -o StrictHostKeyChecking=no \
-        azureuser@${AZURE_VPN_GATEWAY_PUBLIC_IP} \
-        "sudo bash /tmp/install.sh"
-    checkError
+    # printProgress "Running install.sh on VM (this takes ~2 minutes)..."
+    # ssh -i ~/.ssh/vm-gateway -o StrictHostKeyChecking=no \
+    #     azureuser@${AZURE_VPN_GATEWAY_PUBLIC_IP} \
+    #     "sudo bash /tmp/install.sh"
+    # checkError
 
     printProgress "Generating devcontainer client profile on VM..."
     ssh -i ~/.ssh/vm-gateway -o StrictHostKeyChecking=no \
