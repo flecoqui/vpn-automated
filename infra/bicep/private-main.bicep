@@ -224,3 +224,4 @@ output acrLoginServer string = containerRegistryModule.outputs.outAcrLoginServer
 output storageBlobUri string = storageModule.outputs.outStorageBlobUri
 output storageFileUri string = storageModule.outputs.outStorageFileUri
 output storageDfsUri string = storageModule.outputs.outStorageDfsUri
+output vpnGatewayPublicIp string = networkModule.outputs.outVpnGatewayPublicIp

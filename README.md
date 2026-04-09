@@ -280,23 +280,19 @@ Usually this step is not required in a pipeline as the connection with Azure is 
     AZURE_ENVIRONMENT defines the environment 'dev', 'stag', 'prod',...
 
 
-2. Once Azure Key Vault, Azure Storage Account and Azure Container Registry are deployed into your Azure subscription, as all the new resources are connected to a virtual network with public access disabled, you need to establish a VPN connection to this virtual network before running the notebooks.
+2. Once Azure Key Vault, Azure Storage Account and Azure Container Registry are deployed, the deployment script automatically:
+   - Copies `install.sh` and `gen-client.sh` to the gateway VM over SSH
+   - Runs `install.sh` to install and configure OpenVPN + BIND9 on the VM
+   - Generates a client profile (`devcontainer`) via `gen-client.sh`
+   - Downloads the ready-to-use profile to `./client.ovpn` in this repository
 
-3. As the Virtual Network is fully isolated, the VPN Gateway has been installed connected to the Virtual Network. You can now test this VPN Gateway.
+3. Connect to the VPN from the Dev Container terminal:
 
-4. Install Azure VPN Client on your machine. Windows version available [here](https://apps.microsoft.com/detail/9np355qt2sqb?hl=en-US&gl=US)
+    ```bash
+        vscode ➜ /workspaces/vpn-automated (main) $ sudo openvpn --config client.ovpn
+    ```
 
-5. Open the [Azure portal](https://portal.azure.com), under the private Azure AI resource group find the `virtual network gateway` resource.
-
-6. Open it, navigate to `Settings`, `Point-to-site configuration` and select `Download VPN client`.
-
-7. Unzip the zip file on your machine.
-
-8. Launch the Azure VPN Client and import the file: `azurevpnconfig.xml` file in `AzureVPN` folder into the Azure VPN Client.
-
-9. Click on the 'Connect' button, you'll need to enter your tenant credentials to establish a connection with the virtual network.
-
-10. Once you are connected through the VPN session, you can configure the private vpn infratructure and test the access to the services through the private endpoints using the command line below:
+4. Once connected, run `configure-private-vpn` to test access to the private services:
 
     ```bash
         vscode ➜ /workspaces/vpn-automated (main) $ ./infra/deploy-infra.sh   -a configure-private-vpn

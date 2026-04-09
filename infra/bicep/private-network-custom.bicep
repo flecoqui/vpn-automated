@@ -52,6 +52,8 @@ var vmGatewayName = 'vm-gateway-${baseName}'
 var vmGatewayPublicIpName = 'vm-gateway-pip-${baseName}'
 var vmGatewayNic0Name = 'nic0-${vmGatewayName}'
 var vmGatewayNic1Name = 'nic1-${vmGatewayName}'
+var sshKeyName = 'sshkey-${baseName}'
+
   
 // Please note that though not required for the recipe, the "AzureBastionSubnet" subnet has been created to maintain idempotency of the deployment
 // in case user decides to create a bastion host in the same VNet for testing purpose.
@@ -247,7 +249,7 @@ resource vmGateway 'Microsoft.Compute/virtualMachines@2024-03-01' = {
           publicKeys: [
             {
               path: '/home/${vmAdminUsername}/.ssh/authorized_keys'
-              keyData: vmAdminSshPublicKey
+              keyData: sshKey.properties.publicKey
             }
           ]
         }
@@ -285,7 +287,16 @@ resource vmGatewayCustomScript 'Microsoft.Compute/virtualMachines/extensions@202
   }
 }
 
+resource sshKey 'Microsoft.Compute/sshPublicKeys@2023-03-01' = {
+  name: sshKeyName
+  location: resourceGroup().location
+  properties: {
+    publicKey:  vmAdminSshPublicKey
+  }
+}
+
 output outVnetName string = vnet.name
 output outVnetId string = vnet.id
 output outPrivateEndpointSubnetName string = privateEndpointSubnetName
 output outDataGWSubnetName string = datagwSubnetName
+output outVpnGatewayPublicIp string = vpnGatewayPublicIp.properties.ipAddress

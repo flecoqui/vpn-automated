@@ -29,9 +29,12 @@
       }
     }
   },
-
+  "runArgs": [
+    "--cap-add=NET_ADMIN",
+    "--device=/dev/net/tun"
+  ],
   // Install iputils-ping during initial container creation
   "onCreateCommand": "python -m pip install -r ./.devcontainer/requirements.txt  && sudo apt-get update && sudo DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends iputils-ping",
-  "postCreateCommand": "echo \"docker $(docker version)\" && echo \"python $(python --version)\" ",
+  "postCreateCommand": ".devcontainer/install-openvpn.sh &&  echo \"docker $(docker version)\" && echo \"python $(python --version)\" ",
   "remoteUser": "vscode"
 }

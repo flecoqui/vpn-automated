@@ -223,6 +223,7 @@ module appInsightsModule 'private-appinsights.bicep' = {
 output outVirtualNetworkName string = networkModule.outputs.outVnetName
 output outPrivateEndpointSubnetName string = networkModule.outputs.outPrivateEndpointSubnetName
 output outDataGWSubnetName string = networkModule.outputs.outDataGWSubnetName
+output vpnGatewayPublicIp string = networkModule.outputs.outVpnGatewayPublicIp
 output keyVaultName string = keyVaultModule.outputs.outKeyVaultName
 output acrName string = containerRegistryModule.outputs.outAcrName 
 output appInsightsName string = appInsightsModule.outputs.outAppInsightsName

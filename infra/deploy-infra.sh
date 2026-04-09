@@ -178,6 +178,9 @@ setAzureResourceNames()
 
     AZURE_VPN_GATEWAY_PIP_NAME=$(echo ${RESULT}  | jq -r '.vpnGatewayPublicIpName.value' 2>/dev/null)
     echo "AZURE_VPN_GATEWAY_PIP_NAME: $AZURE_VPN_GATEWAY_PIP_NAME"
+    AZURE_VPN_GATEWAY_PUBLIC_IP=$(echo ${RESULT}  | jq -r '.vpnGatewayPublicIp.value' 2>/dev/null)
+    AZURE_VPN_GATEWAY_PUBLIC_IP=$(echo ${AZURE_VPN_GATEWAY_PUBLIC_IP} | tr -d '"')
+    echo "AZURE_VPN_GATEWAY_PUBLIC_IP: $AZURE_VPN_GATEWAY_PUBLIC_IP"
     AZURE_DNS_RESOLVER_NAME=$(echo ${RESULT}  | jq -r '.dnsResolverName.value' 2>/dev/null)
     echo "AZURE_DNS_RESOLVER_NAME: $AZURE_DNS_RESOLVER_NAME"
 
@@ -222,6 +225,10 @@ readDeploymentOutputs()
 
     AZURE_APP_INSIGHTS_NAME=$(echo ${RESULT}  | jq -r '.appInsightsName.value' 2>/dev/null)
     echo "AZURE_APP_INSIGHTS_NAME: $AZURE_APP_INSIGHTS_NAME"     
+
+    AZURE_VPN_GATEWAY_PUBLIC_IP=$(echo ${RESULT}  | jq -r '.vpnGatewayPublicIp.value' 2>/dev/null)
+    AZURE_VPN_GATEWAY_PUBLIC_IP=$(echo ${AZURE_VPN_GATEWAY_PUBLIC_IP} | tr -d '"')
+    echo "AZURE_VPN_GATEWAY_PUBLIC_IP: $AZURE_VPN_GATEWAY_PUBLIC_IP"
 }
 
 ##############################################################################
@@ -1106,10 +1113,54 @@ if [ "${ACTION}" = "deploy-private-custom-vpn" ] ; then
     eval "$cmd"
     checkError
     readDeploymentOutputs ${DEPLOY_NAME} ${RESOURCE_GROUP_NAME}
-
     updateConfigurationFile "${CONFIGURATION_FILE}" AZURE_STORAGE_ACCOUNT_NAME "${AZURE_STORAGE_ACCOUNT_NAME}"
     updateConfigurationFile "${CONFIGURATION_FILE}" AZURE_KEY_VAULT_NAME "${AZURE_KEY_VAULT_NAME}"
     updateConfigurationFile "${CONFIGURATION_FILE}" AZURE_ACR_NAME "${AZURE_ACR_NAME}"
+
+    ##########################################################################
+    # Provision OpenVPN on the gateway VM and generate client profile
+    ##########################################################################
+    printProgress "Waiting for SSH to become available on ${AZURE_VPN_GATEWAY_PUBLIC_IP}..."
+    for i in $(seq 1 30); do
+        if ssh -i ~/.ssh/vm-gateway -o StrictHostKeyChecking=no -o ConnectTimeout=5 \
+               azureuser@${AZURE_VPN_GATEWAY_PUBLIC_IP} true 2>/dev/null; then
+            break
+        fi
+        if [ "$i" = "30" ]; then
+            printError "Timed out waiting for SSH on ${AZURE_VPN_GATEWAY_PUBLIC_IP}"
+            exit 1
+        fi
+        sleep 10
+    done
+
+    printProgress "Copying install.sh and gen-client.sh to VM..."
+    scp -i ~/.ssh/vm-gateway -o StrictHostKeyChecking=no \
+        "$SCRIPTS_DIRECTORY/scripts/install.sh" \
+        "$SCRIPTS_DIRECTORY/scripts/gen-client.sh" \
+        azureuser@${AZURE_VPN_GATEWAY_PUBLIC_IP}:/tmp/
+    checkError
+
+    printProgress "Running install.sh on VM (this takes ~2 minutes)..."
+    ssh -i ~/.ssh/vm-gateway -o StrictHostKeyChecking=no \
+        azureuser@${AZURE_VPN_GATEWAY_PUBLIC_IP} \
+        "sudo bash /tmp/install.sh"
+    checkError
+
+    printProgress "Generating devcontainer client profile on VM..."
+    ssh -i ~/.ssh/vm-gateway -o StrictHostKeyChecking=no \
+        azureuser@${AZURE_VPN_GATEWAY_PUBLIC_IP} \
+        "sudo bash /tmp/gen-client.sh devcontainer"
+    checkError
+
+    printProgress "Downloading client.ovpn to ${SCRIPTS_DIRECTORY}/../client.ovpn..."
+    scp -i ~/.ssh/vm-gateway -o StrictHostKeyChecking=no \
+        azureuser@${AZURE_VPN_GATEWAY_PUBLIC_IP}:/etc/openvpn/clients/devcontainer.ovpn \
+        "${SCRIPTS_DIRECTORY}/../client.ovpn"
+    checkError
+
+    printMessage "OpenVPN provisioning complete."
+    printMessage "Connect with: sudo openvpn --config ${SCRIPTS_DIRECTORY}/../client.ovpn"
+    printProgress "Once connected, run: ./infra/deploy-infra.sh -a configure-private-vpn"
     exit 0
 fi
 

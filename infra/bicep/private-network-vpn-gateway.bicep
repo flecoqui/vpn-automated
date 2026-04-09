@@ -253,3 +253,4 @@ output outVnetName string = vnet.name
 output outVnetId string = vnet.id
 output outPrivateEndpointSubnetName string = privateEndpointSubnetName
 output outDataGWSubnetName string = datagwSubnetName
+output outVpnGatewayPublicIp string = vpnGatewayPublicIp.properties.ipAddress

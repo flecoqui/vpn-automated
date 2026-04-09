@@ -210,6 +210,11 @@ ecdh-curve prime256v1
 # Extra TLS protection key
 tls-auth /etc/openvpn/server/ta.key 0
 
+# Auth digest — must match client; OpenVPN 2.6+ defaults to SHA256 (was SHA1 in 2.5)
+auth SHA256
+cipher AES-256-GCM
+ncp-ciphers AES-256-GCM:AES-128-GCM
+
 # Push routes to clients (Azure VNet, etc.)
 EOF
 
