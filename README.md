@@ -1,4 +1,4 @@
-# Deploying an Azure Key Vault, Azure Storage Account and Azure Container Registry with VPN
+# Deploying an Azure Key Vault, Azure Storage Account and Azure Container Registry with VPN Gateway
 
 ## Introduction
 
