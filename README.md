@@ -10,9 +10,13 @@ This document describes how to deploy Azure Key Vault, Azure Storage Account and
 
 ![Public Infrastructure](./diagrams/public-vpn.png)
 
-- One configuration with private endpoints to reach Key Vault, Storage and Registry.
+- One configuration with private endpoints to reach Key Vault, Storage and Registry through an Azure VPN Gateway.
 
 ![Private Infrastructure](./diagrams/private-vpn.png)
+
+- One configuration with private endpoints to reach Key Vault, Storage and Registry through a custom VPN Gateway.
+
+![Private Infrastructure](./diagrams/private-custom-vpn.png)
 
 
 ## Getting Started
