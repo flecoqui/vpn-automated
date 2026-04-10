@@ -5,7 +5,7 @@ echo "[install-openvpn] Installing packages..."
 sudo apt-get update -y
 # Ubuntu docs: "sudo apt install openvpn easy-rsa" [2](https://ubuntu.com/server/docs/how-to/security/install-openvpn/)
 sudo apt-get install -y --no-install-recommends \
-  openvpn easy-rsa iproute2 iptables ca-certificates curl
+  openvpn easy-rsa iproute2 iptables ca-certificates curl resolvconf
 
 echo "[install-openvpn] Ensuring /dev/net/tun exists..."
 # In some container setups, /dev/net/tun isn't present unless passed from host.

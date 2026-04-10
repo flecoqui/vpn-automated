@@ -8,8 +8,10 @@ VPN_POOL_CIDR="${VPN_POOL_CIDR:-10.10.0.0/24}"
 # Routes to push to clients (space-separated CIDRs). Example: "10.0.0.0/8 172.16.0.0/12"
 PUSH_ROUTES="${PUSH_ROUTES:-10.0.0.0/8}"
 
-# DNS server IP to push to VPN clients (should be THIS VM's private IP in Azure)
-DNS_LISTEN_IP="${DNS_LISTEN_IP:-10.0.0.4}"
+# DNS server IP to push to VPN clients.
+# Defaults to the first host of VPN_POOL_CIDR (the server's tun0 IP with topology subnet).
+# BIND9 binds to 0.0.0.0 (all interfaces), so VPN clients can always reach it at this address.
+DNS_LISTEN_IP="${DNS_LISTEN_IP:-10.10.0.1}"
 
 # Bind forwarder for Azure VNets / Private DNS
 AZURE_DNS_FORWARDER="${AZURE_DNS_FORWARDER:-168.63.129.16}"
@@ -38,6 +40,15 @@ require_root() {
   if [[ "${EUID}" -ne 0 ]]; then
     echo "Please run as root (sudo)." >&2
     exit 1
+  fi
+}
+
+fix_hostname_resolution() {
+  local hn
+  hn="$(hostname)"
+  if ! grep -qP "^\s*127\.0\.1\.1\s+${hn}" /etc/hosts; then
+    log "Adding 127.0.1.1 ${hn} to /etc/hosts (fixes sudo hostname resolution)"
+    echo "127.0.1.1 ${hn}" >> /etc/hosts
   fi
 }
 
@@ -272,6 +283,9 @@ options {
     ${AZURE_DNS_FORWARDER};
   };
 
+  # Listen on all interfaces so VPN tun0 clients can reach this resolver
+  listen-on { any; };
+
   dnssec-validation auto;
   auth-nxdomain no; # conform to RFC1035
   listen-on-v6 { any; };
@@ -305,6 +319,7 @@ smoke_tests() {
 
 main() {
   require_root
+  fix_hostname_resolution
   bootstrap_dns
   install_packages
   setup_easyrsa_pki

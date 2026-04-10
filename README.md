@@ -201,7 +201,6 @@ Usually this step is not required in a pipeline as the connection with Azure is 
         output storageAccountDefaultContainerName string = 'test${baseName}'
         output keyVaultName string = 'kv${baseName}'
         output privateEndpointSubnetName string = 'snet${baseName}pe'
-        output datagwSubnetName string = 'snet${baseName}dtgw'
         output vpnGatewayName string = 'vnetvpngateway${baseName}'
         output vpnGatewayPublicIpName string = 'vnetvpngatewaypip${baseName}'
         output dnsResolverName string = 'vnetdnsresolver${baseName}'
@@ -211,7 +210,8 @@ Usually this step is not required in a pipeline as the connection with Azure is 
         output gatewaySubnetName string = 'GatewaySubnet'
         output dnsDelegationSubNetName string = 'DNSDelegationSubnet'
         output baseName string = baseName
-        output resourceGroupAzureAIName string = 'rgvpn${baseName}'
+        output resourceGroupName string = 'rgvpn${baseName}'
+
     ```
 
 #### Deploying Azure Key Vault, Azure Storage Account and Azure Container Registry with public endpoint
@@ -242,7 +242,12 @@ Usually this step is not required in a pipeline as the connection with Azure is 
     AZURE_ENVIRONMENT defines the environment 'dev', 'stag', 'prod',...
 
 
-2. Once Azure Key Vault, Azure Storage Account and Azure Container Registry are deployed into your Azure subscription, you can check whether all the associated resources are deployed with Azure Portal. 
+2. Once Azure Key Vault, Azure Storage Account and Azure Container Registry are deployed into your Azure subscription, you can check whether all the associated resources are deployed with Azure Portal. When the infrastructure is deployed the script will test the connection with Azure Key Vault, Azure Storage Account and Azure Container Registry:
+    - Azure Key Vault: store and read a secret in Key Vault
+    - Azure Storage Account: Upload and Download a file from Storage
+    - Azure Container Registry: Push and Pull an image to the registry
+    Moreover, this script check whether the IP Addresses of all the resources are public IP address. 
+ 
 
 ##### Removing the public resources
 
@@ -253,9 +258,9 @@ Usually this step is not required in a pipeline as the connection with Azure is 
     ```
 
 
-#### Deploying Azure Key Vault, Azure Storage Account and Azure Container Registry with private endpoint
+#### Deploying Azure Key Vault, Azure Storage Account and Azure Container Registry with private endpoint through Azure VPN Gateway
 
-1. Once you are connected to your Azure subscription, you can now deploy an Azure Key Vault, Azure Storage Account and Azure Container Registry infrastructure associated with private endpoints.
+1. Once you are connected to your Azure subscription, you can now deploy an Azure Key Vault, Azure Storage Account and Azure Container Registry infrastructure connected to a VNET and associated with private endpoints and through an Azure VPN Gateway and DNS Resolver 
 
     ```bash
         vscode ➜ /workspaces/vpn-automated (main) $ ./infra/deploy-infra.sh   -a deploy-private-vpn
@@ -280,23 +285,34 @@ Usually this step is not required in a pipeline as the connection with Azure is 
     AZURE_ENVIRONMENT defines the environment 'dev', 'stag', 'prod',...
 
 
-2. Once Azure Key Vault, Azure Storage Account and Azure Container Registry are deployed, the deployment script automatically:
-   - Copies `install.sh` and `gen-client.sh` to the gateway VM over SSH
-   - Runs `install.sh` to install and configure OpenVPN + BIND9 on the VM
-   - Generates a client profile (`devcontainer`) via `gen-client.sh`
-   - Downloads the ready-to-use profile to `./client.ovpn` in this repository
 
-3. Connect to the VPN from the Dev Container terminal:
+2. Once Azure Key Vault, Azure Storage Account and Azure Container Registry are deployed into your Azure subscription, as all the new resources are connected to a virtual network with public access disabled, you need to establish a VPN connection to this virtual network before testing the connections to the new resources from the devcontainer.
 
-    ```bash
-        vscode ➜ /workspaces/vpn-automated (main) $ sudo openvpn --config client.ovpn
-    ```
+3. As the Virtual Network is fully isolated, the VPN Gateway has been installed connected to the Virtual Network. You can now test this VPN Gateway.
 
-4. Once connected, run `configure-private-vpn` to test access to the private services:
+4. Install Azure VPN Client on your machine. Windows version available [here](https://apps.microsoft.com/detail/9np355qt2sqb?hl=en-US&gl=US)
+
+5. Open the [Azure portal](https://portal.azure.com), under the private Fabric resource group find the `virtual network gateway` resource.
+
+6. Open it, navigate to `Settings`, `Point-to-site configuration` and select `Download VPN client`.
+
+7. Unzip the zip file on your machine.
+
+8. Launch the Azure VPN Client and import the file: `azurevpnconfig.xml` file in `AzureVPN` folder into the Azure VPN Client.
+
+9. Click on the 'Connect' button, you'll need to enter your tenant credentials to establish a connection with the virtual machine.
+
+10. Once you are connected you can run the internal test using the following command:
 
     ```bash
         vscode ➜ /workspaces/vpn-automated (main) $ ./infra/deploy-infra.sh   -a configure-private-vpn
     ```
+    The script will test the connection with Azure Key Vault, Azure Storage Account and Azure Container Registry:
+    - Azure Key Vault: store and read a secret in Key Vault
+    - Azure Storage Account: Upload and Download a file from Storage
+    - Azure Container Registry: Push and Pull an image to the registry
+    Moreover, this script check whether the IP Addresses of all the resources are private IP addresses.
+
 
 ##### Removing the private resources
 
@@ -304,4 +320,88 @@ Usually this step is not required in a pipeline as the connection with Azure is 
 
     ```bash
         vscode ➜ /workspaces/vpn-automated (main) $ ./infra/deploy-infra.sh   -a remove-private-vpn
+    ```
+
+#### Deploying Azure Key Vault, Azure Storage Account and Azure Container Registry with private endpoint through a custom VPN Gateway
+
+1. For prodcution deployment it's recommended to use the Azure VPN Gateway and the DNS resolver. If you want to optimize the cost, you can use a custom VPN Gateway running on a small Virtual Machine. The user experience will almost the same. Once the infrastructure will be deployed, a VPN connection will be established from the dev container running in a dedicated terminal and a proxy server will be running in another terminal to allow the external applications (Browser running Azure Portal) to use this VPN connection. 
+
+2.  Once you are connected to your Azure subscription, you can now deploy an Azure Key Vault, Azure Storage Account and Azure Container Registry infrastructure connected to a VNET and associated with private endpoints and through an Azure VPN Gateway and DNS Resolver 
+
+    ```bash
+        vscode ➜ /workspaces/vpn-automated (main) $ ./infra/deploy-infra.sh   -a deploy-private-custom-vpn
+    ```
+
+    After this step, the variable AZURE_SUFFIX used for the deployment are stored in the file ./.config/.default.env.
+    AZURE_SUFFIX is used to name the Azure resource. For a private endpoint deployement with suffix will be "${AZURE_ENVIRONMENT}pub${AZURE_SUFFIX}", and "${AZURE_ENVIRONMENT}pri${AZURE_SUFFIX}" for a deployment with private endpoints
+
+    ```bash
+        vscode ➜ /workspaces/vpn-automated (main) $ cat ./.config/.default.env
+        AZURE_REGION=westus3
+        AZURE_SUBSCRIPTION_ID=to-be-completed
+        AZURE_TENANT_ID=to-be-completed
+        AZURE_ENVIRONMENT=dev
+        AZURE_SUFFIX=3033
+    ```
+
+    AZURE_REGION defines the Azure region where you want to install your infrastructure, it's 'westus3' by default.
+    AZURE_SUFFIX defines the suffix which is used to name the Azure resources. By default this suffix includes 4 random digits which are used to avoid naming conflict when a resource with the same name has already been deployed in another subscription.
+    AZURE_SUBSCRIPTION_ID is the Azure Subscription Id where you want to install your infrastructure
+    AZURE_TENANT_ID is the Azure Tenant Id used for the authentication.
+    AZURE_ENVIRONMENT defines the environment 'dev', 'stag', 'prod',...
+
+3. Once Azure Key Vault, Azure Storage Account and Azure Container Registry are deployed, the script will create two Open VPN client configuration files: `./clientuser1.ovpn` and `./clientuser2.ovpn` running the script `gen-client.sh` remotely on the virtual machine running the Open VPN server.  
+
+4. From this stage, you can establish the VPN connection between the devcontainer and the VPN Gateway server in a new terminal running the following command:
+
+    ```bash
+        vscode ➜ /workspaces/vpn-automated (main) $ sudo openvpn --config client.ovpn
+    ```
+
+5. You can also launch a proxy server in your devcontainer to allow the external appication running on Windows or MAcOS to use this server to reach the resources connected to the isolated virtual network, running the following command:
+
+    ```bash
+        vscode ➜ /workspaces/vpn-automated (main) $ bash ./infra/scripts/start-socks-proxy.sh
+    ```
+
+6. Moreover, you can laucnh automatically the VPN Connection and Proxy server using the VSCode task define in the file `.vscode/tasks.json` using the following keyboard shortcut:
+    Ctrl+Shift+P → Tasks: Run Task → Start VPN + Proxy
+
+7. Once the VPN connection is established and the proxy server is running you can launch the browser on Widnows or MacOs with the following argument for the Chrome based browser:
+
+    ```bash
+       --proxy-server="socks5://localhost:1080"
+    ```
+    Below the command line to launch Microsoft Edge or Chrome on Windows:
+    Edge 64bits:  
+    ```bash
+        "C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe" --proxy-server="socks5://localhost:1080"
+    ```
+    Chrome 64bits:  
+    ```bash
+        "C:\Program Files\Google\Chrome\Application\chrome.exe" --proxy-server="socks5://localhost:1080"
+    ```
+    Edge 32bits:  
+    ```bash
+        "C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe" --proxy-server="socks5://localhost:1080" --user-data-dir="%TEMP%\edge-vpn-profile"
+    ```
+
+
+8. Once all the connections services are running, you can run the internal test using the following command:
+
+    ```bash
+        vscode ➜ /workspaces/vpn-automated (main) $ ./infra/deploy-infra.sh   -a configure-private-custom-vpn
+    ```
+    The script will test the connection with Azure Key Vault, Azure Storage Account and Azure Container Registry:
+    - Azure Key Vault: store and read a secret in Key Vault
+    - Azure Storage Account: Upload and Download a file from Storage
+    - Azure Container Registry: Push and Pull an image to the registry
+    Moreover, this script check whether the IP Addresses of all the resources are private IP addresses.
+
+##### Removing the private resources
+
+1. When your tests are over, you can remove the infrastructure running the following commands:
+
+    ```bash
+        vscode ➜ /workspaces/vpn-automated (main) $ ./infra/deploy-infra.sh   -a remove-private-custom-vpn
     ```

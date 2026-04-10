@@ -11,9 +11,6 @@ param vnetName string
 @description('The name of the virtual network subnet to be used for private endpoints.')
 param privateEndpointSubnetName string
 
-@description('The name of the virtual network subnet to be used for Azure AI Jump Box subnet.')
-param datagwSubnetName string
-
 @description('The virtual network IP space to use for the new virutal network.')
 param vnetAddressPrefix string
 
@@ -22,9 +19,6 @@ param privateEndpointSubnetAddressPrefix string
 
 @description('The IP space to use for the AzureBastionSubnet subnet.')
 param bastionSubnetAddressPrefix string
-
-@description('The IP space to use for Azure AI Jump Box subnet.')
-param datagwSubnetAddressPrefix string
 
 @description('The IP address prefix for the virtual network subnet used for VPN Gateway.')
 param gatewaySubnetAddressPrefix string
@@ -69,15 +63,6 @@ resource vnet 'Microsoft.Network/virtualNetworks@2021-03-01' = {
         }
       }
       {
-        name: datagwSubnetName
-        properties: {
-          addressPrefix: datagwSubnetAddressPrefix
-          networkSecurityGroup: {
-            id: datagwSubnetNsg.id
-          }
-        }
-      }
-      {
         name: bastionSubnetName
         properties: {
           addressPrefix: bastionSubnetAddressPrefix
@@ -112,14 +97,6 @@ resource vnet 'Microsoft.Network/virtualNetworks@2021-03-01' = {
 // network security group for site
 resource defaultNsgSubnet 'Microsoft.Network/networkSecurityGroups@2020-05-01' = {
   name: '${vnetName}-default-nsg'
-  location: location
-  properties: {
-    securityRules: []
-  }
-}
-
-resource datagwSubnetNsg 'Microsoft.Network/networkSecurityGroups@2020-05-01' = {
-  name: '${vnetName}-datagw-nsg'
   location: location
   properties: {
     securityRules: []
@@ -252,5 +229,4 @@ resource inboundEndpoint 'Microsoft.Network/dnsResolvers/inboundEndpoints@2025-0
 output outVnetName string = vnet.name
 output outVnetId string = vnet.id
 output outPrivateEndpointSubnetName string = privateEndpointSubnetName
-output outDataGWSubnetName string = datagwSubnetName
 output outVpnGatewayPublicIp string = vpnGatewayPublicIp.properties.ipAddress

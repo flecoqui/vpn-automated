@@ -1,0 +1,38 @@
+{
+  "version": "2.0.0",
+  "tasks": [
+    {
+      "label": "Start OpenVPN Client",
+      "type": "shell",
+      "command": "sudo openvpn --config ${workspaceFolder}/clientuser1.ovpn",
+      "presentation": {
+        "panel": "dedicated",
+        "reveal": "always",
+        "group": "vpn"
+      },
+      "isBackground": true,
+      "problemMatcher": []
+    },
+    {
+      "label": "Start SOCKS5 Proxy",
+      "type": "shell",
+      "command": "bash ${workspaceFolder}/infra/scripts/start-socks-proxy.sh",
+      "presentation": {
+        "panel": "dedicated",
+        "reveal": "always",
+        "group": "vpn"
+      },
+      "isBackground": true,
+      "problemMatcher": []
+    },
+    {
+      "label": "Start VPN + Proxy",
+      "dependsOn": ["Start OpenVPN Client", "Start SOCKS5 Proxy"],
+      "dependsOrder": "parallel",
+      "presentation": {
+        "reveal": "silent"
+      },
+      "problemMatcher": []
+    }
+  ]
+}

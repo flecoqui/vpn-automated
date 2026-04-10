@@ -1,0 +1,55 @@
+#!/usr/bin/env bash
+# Lightweight update-resolv-conf for systems without systemd-resolved / D-Bus.
+# Drop-in replacement for /etc/openvpn/update-resolv-conf in Docker dev containers.
+#
+# OpenVPN calls this script with $script_type set to 'up' or 'down'.
+# Pushed DNS servers are available as $foreign_option_N env vars.
+#
+# Uses cp-over-tempfile instead of sed -i to avoid "Device or resource busy"
+# on Docker bind-mounted /etc/resolv.conf.
+set -euo pipefail
+
+MARKER="# openvpn-managed"
+RESOLV="/etc/resolv.conf"
+
+# Overwrite RESOLV in-place without renaming (safe for bind mounts)
+resolv_write() {
+  local tmp
+  tmp=$(mktemp)
+  cat > "${tmp}"
+  cp "${tmp}" "${RESOLV}"
+  rm -f "${tmp}"
+}
+
+resolv_strip() {
+  grep -v "${MARKER}" "${RESOLV}" | resolv_write
+}
+
+case "${script_type:-}" in
+  up)
+    # Remove any stale VPN-managed entries from a previous session
+    resolv_strip
+
+    # Collect pushed DNS servers
+    dns_entries=()
+    i=1
+    while true; do
+      varname="foreign_option_${i}"
+      value="${!varname:-}"
+      [ -z "${value}" ] && break
+      if [[ "${value}" == "dhcp-option DNS "* ]]; then
+        dns_entries+=("${value#dhcp-option DNS }")
+      fi
+      i=$(( i + 1 ))
+    done
+
+    # Prepend each DNS server at top of resolv.conf
+    for dns in "${dns_entries[@]}"; do
+      { echo "nameserver ${dns} ${MARKER}"; cat "${RESOLV}"; } | resolv_write
+    done
+    ;;
+
+  down)
+    resolv_strip
+    ;;
+esac

@@ -2,7 +2,7 @@
 ##########################################################################################################################################################################################
 #- Purpose: Script used to install pre-requisites, deploy/undeploy service, start/stop service, test service
 #- Parameters are:
-#- [-a] ACTION - value: azure-login, deploy-public-vpn, deploy-private-vpn, configure-private-vpn, deploy-private-custom-vpn, remove-public-vpn, remove-private-vpn
+#- [-a] ACTION - value: azure-login, deploy-public-vpn, deploy-private-vpn, configure-private-vpn, deploy-private-custom-vpn, configure-private-custom-vpn,remove-public-vpn, remove-private-vpn, remove-private-custom-vpn
 #- [-e] environment - "dev", "stag", "preprod", "prod"
 #- [-c] Sets the configuration file
 #- [-t] Sets deployment Azure Tenant Id
@@ -66,7 +66,7 @@ printProgress(){
 usage() {
     echo
     echo "Arguments:"
-    printf " -a  Sets deploy-infra ACTION { azure-login, deploy-public-vpn, deploy-private-vpn, deploy-private-custom-vpn, configure-private-vpn,remove-public-vpn, remove-private-vpn }\n"
+    printf " -a  Sets deploy-infra ACTION { azure-login, deploy-public-vpn, deploy-private-vpn, deploy-private-custom-vpn, configure-private-vpn, configure-private-custom-vpn,remove-public-vpn, remove-private-vpn, remove-private-custom-vpn }\n"
     printf " -e  Sets the environment - by default 'dev' ('dev', 'test', 'stag', 'prep', 'prod')\n"
     printf " -s  Sets subscription id \n"
     printf " -t  Sets tenant id\n"
@@ -154,8 +154,6 @@ setAzureResourceNames()
     echo "AZURE_VNET_NAME: $AZURE_VNET_NAME"
     AZURE_SUBNET_NAME=$(echo ${RESULT}  | jq -r '.privateEndpointSubnetName.value' 2>/dev/null)
     echo "AZURE_SUBNET_NAME: $AZURE_SUBNET_NAME"
-    AZURE_DATAGW_SUBNET_NAME=$(echo ${RESULT}  | jq -r '.datagwSubnetName.value' 2>/dev/null)
-    echo "AZURE_DATAGW_SUBNET_NAME: $AZURE_DATAGW_SUBNET_NAME"
     AZURE_GATEWAY_SUBNET_NAME=$(echo ${RESULT}  | jq -r '.gatewaySubnetName.value' 2>/dev/null)
     echo "AZURE_GATEWAY_SUBNET_NAME: $AZURE_GATEWAY_SUBNET_NAME"
     AZURE_DNS_DELEGATION_SUBNET_NAME=$(echo ${RESULT}  | jq -r '.dnsDelegationSubNetName.value' 2>/dev/null)
@@ -178,9 +176,8 @@ setAzureResourceNames()
 
     AZURE_VPN_GATEWAY_PIP_NAME=$(echo ${RESULT}  | jq -r '.vpnGatewayPublicIpName.value' 2>/dev/null)
     echo "AZURE_VPN_GATEWAY_PIP_NAME: $AZURE_VPN_GATEWAY_PIP_NAME"
-    AZURE_VPN_GATEWAY_PUBLIC_IP=$(echo ${RESULT}  | jq -r '.vpnGatewayPublicIp.value' 2>/dev/null)
-    AZURE_VPN_GATEWAY_PUBLIC_IP=$(echo ${AZURE_VPN_GATEWAY_PUBLIC_IP} | tr -d '"')
-    echo "AZURE_VPN_GATEWAY_PUBLIC_IP: $AZURE_VPN_GATEWAY_PUBLIC_IP"
+
+
     AZURE_DNS_RESOLVER_NAME=$(echo ${RESULT}  | jq -r '.dnsResolverName.value' 2>/dev/null)
     echo "AZURE_DNS_RESOLVER_NAME: $AZURE_DNS_RESOLVER_NAME"
 
@@ -229,6 +226,16 @@ readDeploymentOutputs()
     AZURE_VPN_GATEWAY_PUBLIC_IP=$(echo ${RESULT}  | jq -r '.vpnGatewayPublicIp.value' 2>/dev/null)
     AZURE_VPN_GATEWAY_PUBLIC_IP=$(echo ${AZURE_VPN_GATEWAY_PUBLIC_IP} | tr -d '"')
     echo "AZURE_VPN_GATEWAY_PUBLIC_IP: $AZURE_VPN_GATEWAY_PUBLIC_IP"
+
+    AZURE_VPN_GATEWAY_PRIVATE_IP=$(echo ${RESULT}  | jq -r '.vpnGatewayPrivateIp.value' 2>/dev/null)
+    AZURE_VPN_GATEWAY_PRIVATE_IP=$(echo ${AZURE_VPN_GATEWAY_PRIVATE_IP} | tr -d '"')
+    echo "AZURE_VPN_GATEWAY_PRIVATE_IP: $AZURE_VPN_GATEWAY_PRIVATE_IP"
+
+    AZURE_DNS_RESOLVER_PRIVATE_IP=$(echo ${RESULT}  | jq -r '.dnsResolverPrivateIp.value' 2>/dev/null)
+    AZURE_DNS_RESOLVER_PRIVATE_IP=$(echo ${AZURE_DNS_RESOLVER_PRIVATE_IP} | tr -d '"')
+    echo "AZURE_DNS_RESOLVER_PRIVATE_IP: $AZURE_DNS_RESOLVER_PRIVATE_IP"
+
+
 }
 
 ##############################################################################
@@ -600,6 +607,121 @@ updateSecretInKeyVault(){
     # printProgress "${secret}=${value}"
 }
 ##############################################################################
+#- doesKeyVaultExist: Check if Key Vault exists
+#  arg 1: Key Vault Name
+##############################################################################
+doesKeyVaultExist(){
+    az keyvault show --name "$1" --query id -o tsv >/dev/null 2>&1
+    if [ $? -ne 0 ]; then
+        echo "false"
+    else
+        echo "true"
+    fi
+}
+##############################################################################
+#- isKeyVaultPublicNetworkAccessEnabled: Check if Key Vault public network access is enabled
+#  arg 1: Key Vault Name
+##############################################################################
+isKKeyVaultPublicNetworkAccessEnabled(){
+az keyvault show -n "$1" \
+  --query "properties.publicNetworkAccess=='Enabled' && properties.networkAcls.defaultAction=='Allow'" \
+  -o tsv
+}
+##############################################################################
+#- openKeyVaultFirewall: Open Key Vault firewall
+#  arg 1: Key Vault Name
+##############################################################################
+openKeyVaultFirewall(){
+    printProgress "Opening Key Vault Firewall ..."
+    cmd="az keyvault update -n $1 --default-action Allow --public-network-access Enabled --output none"
+    printProgress "$cmd"
+    eval "$cmd"
+    
+    cmd="az keyvault update --name $1 --default-action Allow"
+    printProgress "$cmd"
+    eval "$cmd"
+
+    sleep 30
+}
+##############################################################################
+#- closeKeyVaultFirewall: Close Key Vault firewall
+#  arg 1: Key Vault Name
+##############################################################################
+closeKeyVaultFirewall(){
+    printProgress "Closing Key Vault Firewall ..."
+    cmd="az keyvault update -n $1 --default-action Deny --public-network-access Disabled --output none"
+    printProgress "$cmd"
+    eval "$cmd"
+    
+    cmd="az keyvault update --name $1 --default-action Deny"
+    printProgress "$cmd"
+    eval "$cmd"
+
+    sleep 30
+}
+##############################################################################
+#- storeSSHKeysInKeyVault: Store SSH keys in Key Vault
+#  arg 1: Key Vault Name
+#  arg 2: Public Key Secret Name
+#  arg 3: Public Key
+#  arg 4: Private Key Secret Name
+#  arg 5: Private Key
+##############################################################################
+storeSSHKeysInKeyVault(){
+    kv="$1"
+    publicKeySecretName="$2"
+    publicKey="$3"
+    privateKeySecretName="$4"
+    privateKey="$5"
+    if [ $(doesKeyVaultExist ${kv}) = "true" ]; then
+        if [ "$(isKKeyVaultPublicNetworkAccessEnabled ${kv})" = "false" ]; then
+            openKeyVaultFirewall ${kv}
+            updateSecretInKeyVault ${kv} "${publicKeySecretName}" "$publicKey" true
+            updateSecretInKeyVault ${kv} "${privateKeySecretName}" "$privateKey" true
+            closeKeyVaultFirewall ${kv}
+        else
+            updateSecretInKeyVault ${kv} "${publicKeySecretName}" "$publicKey" true
+            updateSecretInKeyVault ${kv} "${privateKeySecretName}" "$privateKey" true
+        fi
+    fi
+
+}
+##############################################################################
+#- readSSHKeysInKeyVault: Read SSH keys from Key Vault
+#  arg 1: Key Vault Name
+#  arg 2: Public Key Secret Name
+#  arg 3: Public Key file
+#  arg 4: Private Key Secret Name
+#  arg 5: Private Key file
+##############################################################################
+readSSHKeysInKeyVault()
+{
+    kv="$1"
+    publicKeySecretName="$2"
+    publicKeyfile="$3"
+    privateKeySecretName="$4"
+    privateKeyfile="$5"
+    if [ $(doesKeyVaultExist ${kv}) = "true" ]; then
+        if [ "$(isKKeyVaultPublicNetworkAccessEnabled ${kv})" = "false" ]; then
+            openKeyVaultFirewall ${kv}
+            key=$(readSecretInKeyVault ${kv} "${publicKeySecretName}")
+            echo "$key" > "${publicKeyfile}"
+            chmod 0644 "${publicKeyfile}"
+            key=$(readSecretInKeyVault ${kv} "${privateKeySecretName}")
+            echo "$key" > "${privateKeyfile}"
+            chmod 0600 "${privateKeyfile}"
+            closeKeyVaultFirewall ${kv}
+        else
+            key=$(readSecretInKeyVault ${kv} "${publicKeySecretName}")
+            echo "$key" > "${publicKeyfile}"
+            chmod 0644 "${publicKeyfile}"       
+            key=$(readSecretInKeyVault ${kv} "${privateKeySecretName}")
+            echo "$key" > "${privateKeyfile}"
+            chmod 0600 "${privateKeyfile}"
+        fi
+    fi
+}
+##############################################################################
 #- readSecretInKeyVault: Read secret from Key Vault
 #  arg 1: Key Vault Name
 #  arg 2: secret name
@@ -740,6 +862,9 @@ DEFAULT_SUBSCRIPTION_ID=""
 DEFAULT_TENANT_ID=""
 DEFAULT_RESOURCE_GROUP="rg${DEFAULT_ENVIRONMENT}public"
 DEFAULT_CONTAINER_IMAGE="hello-world:latest"
+SSH_PUBLIC_KEY_SECRET_NAME="SSH-PUBLIC-KEY"
+SSH_PRIVATE_KEY_SECRET_NAME="SSH-PRIVATE-KEY"
+
 ARG_ACTION="${DEFAULT_ACTION}"
 ARG_CONFIGURATION_FILE="${DEFAULT_CONFIGURATION_FILE}"
 ARG_ENVIRONMENT="${DEFAULT_ENVIRONMENT}"
@@ -778,9 +903,11 @@ if [ "${ARG_ACTION}" != "deploy-public-vpn" ] && \
    [ "${ARG_ACTION}" != "deploy-private-vpn" ] && \
    [ "${ARG_ACTION}" != "deploy-private-custom-vpn" ] && \
    [ "${ARG_ACTION}" != "configure-private-vpn" ] && \
+   [ "${ARG_ACTION}" != "configure-private-custom-vpn" ] && \
    [ "${ARG_ACTION}" != "remove-public-vpn" ] && \
-   [ "${ARG_ACTION}" != "remove-private-vpn" ]; then
-    printError "ACTION '${ARG_ACTION}' not supported, possible values: deploy-public-vpn, deploy-private-vpn, deploy-private-custom-vpn, configure-private-vpn, remove-public-vpn, remove-private-vpn  "
+   [ "${ARG_ACTION}" != "remove-private-vpn" ] && \
+   [ "${ARG_ACTION}" != "remove-private-custom-vpn" ]; then
+    printError "ACTION '${ARG_ACTION}' not supported, possible values: deploy-public-vpn, deploy-private-vpn, deploy-private-custom-vpn, configure-private-vpn, configure-private-custom-vpn, remove-public-vpn, remove-private-vpn, remove-private-custom-vpn  "
     usage
     exit 1
 fi
@@ -1025,7 +1152,6 @@ if [ "${ACTION}" = "deploy-private-vpn" ] ; then
     vnetAddressPrefix=\"10.13.0.0/16\" \
     privateEndpointSubnetAddressPrefix=\"10.13.0.0/24\" \
     bastionSubnetAddressPrefix=\"10.13.1.0/24\" \
-    datagwSubnetAddressPrefix=\"10.13.2.0/24\" \
     gatewaySubnetAddressPrefix=\"10.13.3.0/24\" \
     dnsDelegationSubnetAddressPrefix=\"10.13.4.0/24\" \
     dnsDelegationSubnetIPAddress=\"10.13.4.22\" \
@@ -1077,12 +1203,28 @@ if [ "${ACTION}" = "deploy-private-custom-vpn" ] ; then
         printError "Cannot get current user Object Id"
         exit 1
     fi
+    
+    sshKeyStoredInKeyVault=false
     if [ -f ~/.ssh/vm-gateway ] && [ -f ~/.ssh/vm-gateway.pub ]; then
         printProgress "SSH key for VM gateway already exists"
     else
-        printProgress "Generating SSH key for VM gateway..."
-        ssh-keygen -t rsa -b 4096 -f ~/.ssh/vm-gateway -N ""
+        printProgress "Check whether SSH key are stored in the Key Vault"
+        readSSHKeysInKeyVault "${AZURE_KEY_VAULT_NAME}" "${SSH_PUBLIC_KEY_SECRET_NAME}" "~/.ssh/vm-gateway.pub" "${SSH_PRIVATE_KEY_SECRET_NAME}" "~/.ssh/vm-gateway"
+        if [ -f ~/.ssh/vm-gateway ] && [ -f ~/.ssh/vm-gateway.pub ]; then
+            printProgress "Generating SSH key for VM gateway..."
+            ssh-keygen -t rsa -b 4096 -f ~/.ssh/vm-gateway -N ""
+
+            if [ -f ~/.ssh/vm-gateway ] && [ -f ~/.ssh/vm-gateway.pub ]; then
+                printProgress "SSH key for VM gateway generated successfully"
+                if [ $(doesKeyVaultExist ${AZURE_KEY_VAULT_NAME}) = "true" ]; then
+                    printProgress "Store SSH keys in Key Vault..."
+                    storeSSHKeysInKeyVault "${AZURE_KEY_VAULT_NAME}" "${SSH_PUBLIC_KEY_SECRET_NAME}" "$(cat ~/.ssh/vm-gateway.pub)" "${SSH_PRIVATE_KEY_SECRET_NAME}" "$(cat ~/.ssh/vm-gateway)"
+                    sshKeyStoredInKeyVault=true
+                fi
+            fi
+        fi
     fi
+
     PUBLIC_KEY=$(cat ~/.ssh/vm-gateway.pub)
 
     OBJECT_TYPE=$(getCurrentObjectType)
@@ -1100,7 +1242,6 @@ if [ "${ACTION}" = "deploy-private-custom-vpn" ] ; then
     vnetAddressPrefix=\"10.13.0.0/16\" \
     privateEndpointSubnetAddressPrefix=\"10.13.0.0/24\" \
     bastionSubnetAddressPrefix=\"10.13.1.0/24\" \
-    datagwSubnetAddressPrefix=\"10.13.2.0/24\" \
     gatewaySubnetAddressPrefix=\"10.13.3.0/24\" \
     dnsDelegationSubnetAddressPrefix=\"10.13.4.0/24\" \
     dnsDelegationSubnetIPAddress=\"10.13.4.22\" \
@@ -1113,6 +1254,10 @@ if [ "${ACTION}" = "deploy-private-custom-vpn" ] ; then
     eval "$cmd"
     checkError
     readDeploymentOutputs ${DEPLOY_NAME} ${RESOURCE_GROUP_NAME}
+    if [ "$sshKeyStoredInKeyVault" = false ]; then
+        printProgress "Store SSH keys in Key Vault..."
+        storeSSHKeysInKeyVault "${AZURE_KEY_VAULT_NAME}" "${SSH_PUBLIC_KEY_SECRET_NAME}" "$(cat ~/.ssh/vm-gateway.pub)" "${SSH_PRIVATE_KEY_SECRET_NAME}" "$(cat ~/.ssh/vm-gateway)"
+    fi
     updateConfigurationFile "${CONFIGURATION_FILE}" AZURE_STORAGE_ACCOUNT_NAME "${AZURE_STORAGE_ACCOUNT_NAME}"
     updateConfigurationFile "${CONFIGURATION_FILE}" AZURE_KEY_VAULT_NAME "${AZURE_KEY_VAULT_NAME}"
     updateConfigurationFile "${CONFIGURATION_FILE}" AZURE_ACR_NAME "${AZURE_ACR_NAME}"
@@ -1120,6 +1265,25 @@ if [ "${ACTION}" = "deploy-private-custom-vpn" ] ; then
     ##########################################################################
     # Provision OpenVPN on the gateway VM and generate client profile
     ##########################################################################
+
+    printProgress "Ensure Network Security Group rule for SSH..."
+    cmd="az network nsg rule create \
+        --resource-group ${RESOURCE_GROUP_NAME} \
+        --nsg-name ${AZURE_VNET_NAME}-gateway-nsg \
+        --name AllowSSH \
+        --priority 100 \
+        --direction Inbound \
+        --access Allow \
+        --protocol Tcp \
+        --source-address-prefixes '${CLIENT_IP_ADDRESS}' \
+        --source-port-ranges '*' \
+        --destination-address-prefixes '${AZURE_VPN_GATEWAY_PRIVATE_IP}' \
+        --destination-port-ranges 22 \
+        --description \"Allow SSH inbound\""
+    printProgress "$cmd"
+    eval "$cmd"
+    checkError
+        
     printProgress "Waiting for SSH to become available on ${AZURE_VPN_GATEWAY_PUBLIC_IP}..."
     for i in $(seq 1 30); do
         if ssh -i ~/.ssh/vm-gateway -o StrictHostKeyChecking=no -o ConnectTimeout=5 \
@@ -1133,11 +1297,12 @@ if [ "${ACTION}" = "deploy-private-custom-vpn" ] ; then
         sleep 10
     done
 
-    printProgress "Copying install.sh and gen-client.sh to VM..."
-    scp -i ~/.ssh/vm-gateway -o StrictHostKeyChecking=no \
-    #    "$SCRIPTS_DIRECTORY/scripts/install.sh" \
+    printProgress "Copying gen-client.sh to VM..."
+    cmd="scp -i ~/.ssh/vm-gateway -o StrictHostKeyChecking=no \
         "$SCRIPTS_DIRECTORY/scripts/gen-client.sh" \
-        azureuser@${AZURE_VPN_GATEWAY_PUBLIC_IP}:/tmp/
+        azureuser@${AZURE_VPN_GATEWAY_PUBLIC_IP}:/tmp/"
+    printProgress "$cmd"
+    eval "$cmd"
     checkError
 
     # printProgress "Running install.sh on VM (this takes ~2 minutes)..."
@@ -1146,26 +1311,85 @@ if [ "${ACTION}" = "deploy-private-custom-vpn" ] ; then
     #     "sudo bash /tmp/install.sh"
     # checkError
 
-    printProgress "Generating devcontainer client profile on VM..."
-    ssh -i ~/.ssh/vm-gateway -o StrictHostKeyChecking=no \
+    printProgress "Generating devcontainer user 1 client profile on VM..."
+    cmd="ssh -i ~/.ssh/vm-gateway -o StrictHostKeyChecking=no \
         azureuser@${AZURE_VPN_GATEWAY_PUBLIC_IP} \
-        "sudo bash /tmp/gen-client.sh devcontainer"
+        \"sudo bash /tmp/gen-client.sh devcontaineruser1\""
+    printProgress "$cmd"
+    eval "$cmd"
+    checkError
+
+    printProgress "Generating devcontainer user 1 client profile on VM..."
+    cmd="ssh -i ~/.ssh/vm-gateway -o StrictHostKeyChecking=no \
+        azureuser@${AZURE_VPN_GATEWAY_PUBLIC_IP} \
+        \"sudo cp /etc/openvpn/clients/devcontaineruser1.ovpn /tmp/devcontaineruser1.ovpn && sudo chmod 644 /tmp/devcontaineruser1.ovpn\""
+    printProgress "$cmd"
+    eval "$cmd"
     checkError
 
     printProgress "Downloading client.ovpn to ${SCRIPTS_DIRECTORY}/../client.ovpn..."
-    scp -i ~/.ssh/vm-gateway -o StrictHostKeyChecking=no \
-        azureuser@${AZURE_VPN_GATEWAY_PUBLIC_IP}:/etc/openvpn/clients/devcontainer.ovpn \
-        "${SCRIPTS_DIRECTORY}/../client.ovpn"
+    cmd="scp -i ~/.ssh/vm-gateway -o StrictHostKeyChecking=no \
+        azureuser@${AZURE_VPN_GATEWAY_PUBLIC_IP}:/tmp/devcontaineruser1.ovpn \
+        \"${SCRIPTS_DIRECTORY}/../clientuser1.ovpn\""
+    printProgress "$cmd"
+    eval "$cmd"
+    checkError
+
+    printProgress "Generating devcontainer user 2 client profile on VM..."
+    cmd="ssh -i ~/.ssh/vm-gateway -o StrictHostKeyChecking=no \
+        azureuser@${AZURE_VPN_GATEWAY_PUBLIC_IP} \
+        \"sudo bash /tmp/gen-client.sh devcontaineruser2\""
+    printProgress "$cmd"
+    eval "$cmd"
+    checkError
+
+    printProgress "Generating devcontainer user 2 client profile on VM..."
+    cmd="ssh -i ~/.ssh/vm-gateway -o StrictHostKeyChecking=no \
+        azureuser@${AZURE_VPN_GATEWAY_PUBLIC_IP} \
+        \"sudo cp /etc/openvpn/clients/devcontaineruser2.ovpn /tmp/devcontaineruser2.ovpn && sudo chmod 644 /tmp/devcontaineruser2.ovpn\""
+    printProgress "$cmd"
+    eval "$cmd"
+    checkError
+
+    printProgress "Downloading client.ovpn to ${SCRIPTS_DIRECTORY}/../client.ovpn..."
+    cmd="scp -i ~/.ssh/vm-gateway -o StrictHostKeyChecking=no \
+        azureuser@${AZURE_VPN_GATEWAY_PUBLIC_IP}:/tmp/devcontaineruser2.ovpn \
+        \"${SCRIPTS_DIRECTORY}/../clientuser2.ovpn\""
+    printProgress "$cmd"
+    eval "$cmd"
+    checkError
+
+
+    printProgress "Ensure Network Security Group rule for VPN..."
+    cmd="az network nsg rule create \
+        --resource-group ${RESOURCE_GROUP_NAME} \
+        --nsg-name ${AZURE_VNET_NAME}-gateway-nsg \
+        --name AllowVPN \
+        --priority 101 \
+        --direction Inbound \
+        --access Allow \
+        --protocol Udp \
+        --source-address-prefixes '${CLIENT_IP_ADDRESS}' \
+        --source-port-ranges '*' \
+        --destination-address-prefixes '${AZURE_VPN_GATEWAY_PRIVATE_IP}' \
+        --destination-port-ranges 1194 \
+        --description \"Allow VPN inbound\""
+    printProgress "$cmd"
+    eval "$cmd"
     checkError
 
     printMessage "OpenVPN provisioning complete."
-    printMessage "Connect with: sudo openvpn --config ${SCRIPTS_DIRECTORY}/../client.ovpn"
-    printProgress "Once connected, run: ./infra/deploy-infra.sh -a configure-private-vpn"
+    printProgress "Installing resolvconf for DNS push support (required by client.ovpn up/down scripts)..."
+    sudo apt-get install -y resolvconf 1>/dev/null 2>/dev/null || true
+    printProgress "Installing custom DNS update script (works without systemd in dev containers)..."
+    sudo install -m 0755 "$SCRIPTS_DIRECTORY/scripts/update-resolv-conf" /etc/openvpn/update-resolv-conf
+    printMessage "Connect with: sudo openvpn --config ${SCRIPTS_DIRECTORY}/../clientuser1.ovpn"
+    printProgress "Once connected, run: ./infra/deploy-infra.sh -a configure-private-custom-vpn"
     exit 0
 fi
 
 
-if [ "${ACTION}" = "configure-private-vpn" ] ; then
+if [ "${ACTION}" = "configure-private-vpn" ]  || [ "${ACTION}" = "configure-private-custom-vpn" ] ; then
     cmd="az config set extension.use_dynamic_install=yes_without_prompt"
     printProgress "$cmd"
     eval "$cmd" 1>/dev/null 2>/dev/null || true
@@ -1175,6 +1399,8 @@ if [ "${ACTION}" = "configure-private-vpn" ] ; then
     DEFAULT_DEPLOYMENT_PREFIX="${AZURE_ENVIRONMENT}${VISIBILITY}${AZURE_SUFFIX}"
 
     setAzureResourceNames ${AZURE_ENVIRONMENT} "${VISIBILITY}" "${AZURE_SUFFIX}" "${RESOURCE_GROUP_NAME}"
+    DEPLOY_NAME=$(getLatestDeploymentNameInResourceGroup ${RESOURCE_GROUP_NAME} "${DEFAULT_DEPLOYMENT_PREFIX}")
+    printProgress "Read values associated with deployment '${DEPLOY_NAME}' in resource group '${RESOURCE_GROUP_NAME}'"
     readDeploymentOutputs ${DEPLOY_NAME} ${RESOURCE_GROUP_NAME}
 
     if [ "$(isdiginstalled)" = "false" ]; then
@@ -1194,9 +1420,6 @@ if [ "${ACTION}" = "configure-private-vpn" ] ; then
         exit 1
     fi    
     OBJECT_TYPE=$(getCurrentObjectType)
-    DEPLOY_NAME=$(getLatestDeploymentNameInResourceGroup ${RESOURCE_GROUP_NAME} "${DEFAULT_DEPLOYMENT_PREFIX}")
-    printProgress "Read values associated with deployment '${DEPLOY_NAME}' in resource group '${RESOURCE_GROUP_NAME}'"
-    readDeploymentOutputs ${DEPLOY_NAME} ${RESOURCE_GROUP_NAME}
 
     printProgress "Testing access to Key Vault: ${AZURE_KEY_VAULT_NAME}"
     updateSecretInKeyVault ${AZURE_KEY_VAULT_NAME} "testsecret" "testsecretvalue" true
@@ -1305,7 +1528,7 @@ if [ "${ACTION}" = "remove-public-vpn" ] ; then
     exit 0
 fi
 
-if [ "${ACTION}" = "remove-private-vpn" ] ; then
+if [ "${ACTION}" = "remove-private-vpn" ]  || [ "${ACTION}" = "remove-private-custom-vpn" ] ; then
     VISIBILITY="pri"
     RESOURCE_GROUP_NAME=$(getVPNResourceGroupName "${AZURE_ENVIRONMENT}" "${VISIBILITY}" "${AZURE_SUFFIX}")
     if [ "$(az group exists --name "${RESOURCE_GROUP_NAME}")" = "true" ]; then

@@ -30,10 +30,7 @@ require_root() {
 detect_public_ip() {
   # Azure instance metadata service (IMDS) — preferred on Azure VMs
   local ip
-  ip=$(curl -sf -H "Metadata:true" \
-    "http://169.254.169.254/metadata/instance/network/interface/0/ipv4/ipAddress/0/publicIpAddress?api-version=2021-02-01&format=text" 2>/dev/null) \
-    || ip=$(curl -sf https://api.ipify.org 2>/dev/null) \
-    || ip=$(curl -sf https://checkip.amazonaws.com 2>/dev/null)
+  ip=$(curl -s https://ifconfig.me 2>/dev/null)
   echo "${ip}"
 }
 
@@ -109,9 +106,18 @@ $(cat "${CLIENT_KEY}")
 $(cat "${TA_KEY}")
 </tls-auth>
 
+# Apply pushed dhcp-option DNS entries on Linux via direct resolv.conf manipulation
+# (works without systemd-resolved / D-Bus, compatible with Docker dev containers)
+# NOTE: Windows users — remove the three lines below (script-security / up / down).
+#       The Windows OpenVPN client applies DNS automatically via the TAP/TUN adapter.
+script-security 2
+up /etc/openvpn/update-resolv-conf
+down /etc/openvpn/update-resolv-conf
+
 verb 3
 EOF
 
 chmod 600 "${OUTFILE}"
 log "Done: ${OUTFILE}"
+cat "${OUTFILE}"
 log "Transfer with: scp root@<server>:${OUTFILE} ./${CLIENT}.ovpn"

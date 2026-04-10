@@ -11,9 +11,6 @@ param vnetName string
 @description('The name of the virtual network subnet to be used for private endpoints.')
 param privateEndpointSubnetName string
 
-@description('The name of the virtual network subnet to be used for Azure AI Jump Box subnet.')
-param datagwSubnetName string
-
 @description('The virtual network IP space to use for the new virutal network.')
 param vnetAddressPrefix string
 
@@ -23,9 +20,6 @@ param privateEndpointSubnetAddressPrefix string
 @description('The IP space to use for the AzureBastionSubnet subnet.')
 param bastionSubnetAddressPrefix string
 
-@description('The IP space to use for Azure AI Jump Box subnet.')
-param datagwSubnetAddressPrefix string
-
 @description('The IP address prefix for the virtual network subnet used for VPN Gateway.')
 param gatewaySubnetAddressPrefix string
 
@@ -34,6 +28,9 @@ param dnsDelegationSubnetAddressPrefix string
 
 @description('The IP address prefix for the virtual network subnet used dns delegation.')
 param dnsDelegationSubnetIPAddress string
+
+@description('The client IP address.')
+param clientIpAddress string = ''
 
 @description('The tags to be applied to the provisioned resources.')
 param tags object
@@ -45,7 +42,7 @@ param vmAdminUsername string = 'azureuser'
 @secure()
 param vmAdminSshPublicKey string
 
-var gatewaySubnetName ='GatewaySubnet'
+var gatewaySubnetName ='OpenVPNSubnet'
 var dnsDelegationSubNetName = 'DNSDelegationSubnet'
 var bastionSubnetName = 'AzureBastionSubnet'
 var vmGatewayName = 'vm-gateway-${baseName}'
@@ -74,16 +71,7 @@ resource vnet 'Microsoft.Network/virtualNetworks@2021-03-01' = {
         properties: {
           addressPrefix: privateEndpointSubnetAddressPrefix
           networkSecurityGroup: {
-            id: defaultNsgSubnet.id
-          }
-        }
-      }
-      {
-        name: datagwSubnetName
-        properties: {
-          addressPrefix: datagwSubnetAddressPrefix
-          networkSecurityGroup: {
-            id: datagwSubnetNsg.id
+            id: defaultSubnetNsg.id
           }
         }
       }
@@ -106,13 +94,16 @@ resource vnet 'Microsoft.Network/virtualNetworks@2021-03-01' = {
         name: gatewaySubnetName
         properties: {
           addressPrefix: gatewaySubnetAddressPrefix
+          networkSecurityGroup: {
+            id: gatewaySubnetNsg.id
+          }          
         }
       }
     ]
   }
 }
 // network security group for site
-resource defaultNsgSubnet 'Microsoft.Network/networkSecurityGroups@2020-05-01' = {
+resource defaultSubnetNsg 'Microsoft.Network/networkSecurityGroups@2020-05-01' = {
   name: '${vnetName}-default-nsg'
   location: location
   properties: {
@@ -120,11 +111,26 @@ resource defaultNsgSubnet 'Microsoft.Network/networkSecurityGroups@2020-05-01' =
   }
 }
 
-resource datagwSubnetNsg 'Microsoft.Network/networkSecurityGroups@2020-05-01' = {
-  name: '${vnetName}-datagw-nsg'
+resource gatewaySubnetNsg 'Microsoft.Network/networkSecurityGroups@2020-05-01' = {
+  name: '${vnetName}-gateway-nsg'
   location: location
   properties: {
-    securityRules: []
+    securityRules: [
+      {
+        name: 'AllowSSH'
+        properties: {
+          description: 'Locks inbound down to ssh default port 22.'
+          protocol: 'Tcp'
+          sourcePortRange: '*'
+          destinationPortRange: '22'
+          sourceAddressPrefix: clientIpAddress
+          destinationAddressPrefix: '*'
+          access: 'Allow'
+          priority: 100
+          direction: 'Inbound'
+        }
+      }
+    ]
   }
 }
 
@@ -184,7 +190,7 @@ resource vmGatewayNic0 'Microsoft.Network/networkInterfaces@2024-01-01' = {
         name: 'ipconfig1'
         properties: {
           subnet: {
-            id: '${vnet.id}/subnets/${datagwSubnetName}'
+            id: '${vnet.id}/subnets/${gatewaySubnetName}'
           }
           privateIPAllocationMethod: 'Dynamic'
           publicIPAddress: {
@@ -298,5 +304,7 @@ resource sshKey 'Microsoft.Compute/sshPublicKeys@2023-03-01' = {
 output outVnetName string = vnet.name
 output outVnetId string = vnet.id
 output outPrivateEndpointSubnetName string = privateEndpointSubnetName
-output outDataGWSubnetName string = datagwSubnetName
 output outVpnGatewayPublicIp string = vpnGatewayPublicIp.properties.ipAddress
+output outVpnGatewayPrivateIp string = vmGatewayNic0.properties.ipConfigurations[0].properties.privateIPAddress
+output outDnsResolverPrivateIp string = vmGatewayNic1.properties.ipConfigurations[0].properties.privateIPAddress
+

@@ -29,9 +29,6 @@ param privateEndpointSubnetAddressPrefix string = '10.13.0.0/24'
 @description('The IP address prefix for the virtual network subnet used for AzureBastionSubnet subnet.')
 param bastionSubnetAddressPrefix string =  '10.13.1.0/24'
 
-@description('The IP address prefix for the virtual network subnet used for Azure AI Jump Box subnet.')
-param datagwSubnetAddressPrefix string =  '10.13.2.0/24'
-
 @description('The IP address prefix for the virtual network subnet used for VPN Gateway.')
 param gatewaySubnetAddressPrefix string = '10.13.3.0/24'
 
@@ -81,7 +78,6 @@ var tags = {
 // Networking related variables
 var vnetName = namingModule.outputs.vnetName
 var privateEndpointSubnetName = namingModule.outputs.privateEndpointSubnetName
-var datagwSubnetName = namingModule.outputs.datagwSubnetName
 
 // Private DNS Zone variables
 var privateDnsNames = [
@@ -120,16 +116,15 @@ module networkModule 'private-network-custom.bicep' = {
     baseName: baseName
     vnetName: vnetName
     privateEndpointSubnetName: privateEndpointSubnetName
-    datagwSubnetName: datagwSubnetName
     vnetAddressPrefix: vnetAddressPrefix
     vmAdminUsername: vmAdminUsername
     vmAdminSshPublicKey: vmAdminSshPublicKey
     privateEndpointSubnetAddressPrefix: privateEndpointSubnetAddressPrefix
     bastionSubnetAddressPrefix: bastionSubnetAddressPrefix
-    datagwSubnetAddressPrefix: datagwSubnetAddressPrefix
     gatewaySubnetAddressPrefix: gatewaySubnetAddressPrefix
     dnsDelegationSubnetIPAddress: dnsDelegationSubnetIPAddress
     dnsDelegationSubnetAddressPrefix: dnsDelegationSubnetAddressPrefix
+    clientIpAddress: clientIpAddress
     tags: tags
   }
 }
@@ -222,8 +217,10 @@ module appInsightsModule 'private-appinsights.bicep' = {
 
 output outVirtualNetworkName string = networkModule.outputs.outVnetName
 output outPrivateEndpointSubnetName string = networkModule.outputs.outPrivateEndpointSubnetName
-output outDataGWSubnetName string = networkModule.outputs.outDataGWSubnetName
 output vpnGatewayPublicIp string = networkModule.outputs.outVpnGatewayPublicIp
+output vpnGatewayPrivateIp string = networkModule.outputs.outVpnGatewayPrivateIp
+output dnsResolverPrivateIp string = networkModule.outputs.outDnsResolverPrivateIp
+
 output keyVaultName string = keyVaultModule.outputs.outKeyVaultName
 output acrName string = containerRegistryModule.outputs.outAcrName 
 output appInsightsName string = appInsightsModule.outputs.outAppInsightsName
