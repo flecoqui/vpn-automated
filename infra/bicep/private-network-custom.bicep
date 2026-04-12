@@ -236,7 +236,7 @@ resource vmGateway 'Microsoft.Compute/virtualMachines@2024-03-01' = {
       osDisk: {
         createOption: 'FromImage'
         managedDisk: {
-          storageAccountType: 'Premium_LRS'
+          storageAccountType: 'Standard_LRS'
         }
       }
       imageReference: {

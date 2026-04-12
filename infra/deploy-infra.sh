@@ -536,9 +536,12 @@ installdig() {
 #- isPrivateIP
 ##############################################################################
 isPrivateIP() {
-    hostname="$1"    
+    hostname="$1"
 
-    dig +short "${hostname}" | grep -qE '^(10\.|172\.(1[6-9]|2[0-9]|3[0-1])\.|192\.168\.)' && echo "true" || echo "false"
+    # Filter to only IPv4 address lines (ignore CNAME records and ;; error lines),
+    # then take the last one — the final resolved IP after the full CNAME chain.
+    ip=$(dig +short "${hostname}" 2>/dev/null | grep -E '^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$' | tail -1)
+    [ -n "$ip" ] && echo "$ip" | grep -qE '^(10\.|172\.(1[6-9]|2[0-9]|3[0-1])\.|192\.168\.)' && echo "true" || echo "false"
 }
 
 ##############################################################################
@@ -624,7 +627,7 @@ doesKeyVaultExist(){
 ##############################################################################
 isKKeyVaultPublicNetworkAccessEnabled(){
 az keyvault show -n "$1" \
-  --query "properties.publicNetworkAccess=='Enabled' && properties.networkAcls.defaultAction=='Allow'" \
+  --query "properties.publicNetworkAccess=='Enabled'" \
   -o tsv
 }
 ##############################################################################
@@ -636,11 +639,6 @@ openKeyVaultFirewall(){
     cmd="az keyvault update -n $1 --default-action Allow --public-network-access Enabled --output none"
     printProgress "$cmd"
     eval "$cmd"
-    
-    cmd="az keyvault update --name $1 --default-action Allow"
-    printProgress "$cmd"
-    eval "$cmd"
-
     sleep 30
 }
 ##############################################################################
@@ -652,11 +650,6 @@ closeKeyVaultFirewall(){
     cmd="az keyvault update -n $1 --default-action Deny --public-network-access Disabled --output none"
     printProgress "$cmd"
     eval "$cmd"
-    
-    cmd="az keyvault update --name $1 --default-action Deny"
-    printProgress "$cmd"
-    eval "$cmd"
-
     sleep 30
 }
 ##############################################################################
@@ -1206,16 +1199,18 @@ if [ "${ACTION}" = "deploy-private-custom-vpn" ] ; then
     
     sshKeyStoredInKeyVault=false
     if [ -f ~/.ssh/vm-gateway ] && [ -f ~/.ssh/vm-gateway.pub ]; then
-        printProgress "SSH key for VM gateway already exists"
+        printProgress "SSH keys for VM gateway already exist"
     else
-        printProgress "Check whether SSH key are stored in the Key Vault"
+        printProgress "Check whether SSH keys are stored in the Key Vault"
         readSSHKeysInKeyVault "${AZURE_KEY_VAULT_NAME}" "${SSH_PUBLIC_KEY_SECRET_NAME}" "~/.ssh/vm-gateway.pub" "${SSH_PRIVATE_KEY_SECRET_NAME}" "~/.ssh/vm-gateway"
         if [ -f ~/.ssh/vm-gateway ] && [ -f ~/.ssh/vm-gateway.pub ]; then
-            printProgress "Generating SSH key for VM gateway..."
+            printProgress "SSH keys were stored in Key Vault..."
+        else
+            printProgress "Generating SSH keys for VM gateway..."
             ssh-keygen -t rsa -b 4096 -f ~/.ssh/vm-gateway -N ""
 
             if [ -f ~/.ssh/vm-gateway ] && [ -f ~/.ssh/vm-gateway.pub ]; then
-                printProgress "SSH key for VM gateway generated successfully"
+                printProgress "SSH keys for VM gateway generated successfully"
                 if [ $(doesKeyVaultExist ${AZURE_KEY_VAULT_NAME}) = "true" ]; then
                     printProgress "Store SSH keys in Key Vault..."
                     storeSSHKeysInKeyVault "${AZURE_KEY_VAULT_NAME}" "${SSH_PUBLIC_KEY_SECRET_NAME}" "$(cat ~/.ssh/vm-gateway.pub)" "${SSH_PRIVATE_KEY_SECRET_NAME}" "$(cat ~/.ssh/vm-gateway)"
@@ -1305,12 +1300,6 @@ if [ "${ACTION}" = "deploy-private-custom-vpn" ] ; then
     eval "$cmd"
     checkError
 
-    # printProgress "Running install.sh on VM (this takes ~2 minutes)..."
-    # ssh -i ~/.ssh/vm-gateway -o StrictHostKeyChecking=no \
-    #     azureuser@${AZURE_VPN_GATEWAY_PUBLIC_IP} \
-    #     "sudo bash /tmp/install.sh"
-    # checkError
-
     printProgress "Generating devcontainer user 1 client profile on VM..."
     cmd="ssh -i ~/.ssh/vm-gateway -o StrictHostKeyChecking=no \
         azureuser@${AZURE_VPN_GATEWAY_PUBLIC_IP} \
@@ -1383,7 +1372,13 @@ if [ "${ACTION}" = "deploy-private-custom-vpn" ] ; then
     sudo apt-get install -y resolvconf 1>/dev/null 2>/dev/null || true
     printProgress "Installing custom DNS update script (works without systemd in dev containers)..."
     sudo install -m 0755 "$SCRIPTS_DIRECTORY/scripts/update-resolv-conf" /etc/openvpn/update-resolv-conf
-    printMessage "Connect with: sudo openvpn --config ${SCRIPTS_DIRECTORY}/../clientuser1.ovpn"
+    printMessage "Connect with VPN Gateway, run the following command in a new terminal: "
+    printMessage "sudo openvpn --config ${SCRIPTS_DIRECTORY}/../clientuser1.ovpn"
+    printMessage "Launch the proxy, run the following command in a new terminal: "
+    printMessage "./infra/scripts/start-socks-proxy.sh"
+    printMessage "Set up proxy in your browser with the following settings: "
+    printMessage "\"C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe\" --proxy-server=\"socks5://localhost:1080\""
+    printMessage "\"C:\\Program Files (x86)\\Microsoft\\Edge\\Application\\msedge.exe\" --proxy-server=\"socks5://localhost:1080\""
     printProgress "Once connected, run: ./infra/deploy-infra.sh -a configure-private-custom-vpn"
     exit 0
 fi
@@ -1407,6 +1402,9 @@ if [ "${ACTION}" = "configure-private-vpn" ]  || [ "${ACTION}" = "configure-priv
         printProgress "Installing 'dig' command line tool"
         installdig
     fi      
+    h=$(getHostname $AZURE_STORAGE_BLOB_URI)
+    printProgress "Checking DNS resolution for Blob API hostname: ${h}"
+    printProgress "DNS resolution result for ${h}: $(dig +short "${h}")"
     if [ "$(isPrivateIP $(getHostname $AZURE_STORAGE_BLOB_URI))" = "false" ]; then
         printError "VPN connection required before configuring private Key vault, Storage and Registry, since the storage account is not behind private endpoint. Please connect to the VPN and run the script again to configure private Key vault, Storage and Registry."
         exit 1

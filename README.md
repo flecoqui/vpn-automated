@@ -369,7 +369,9 @@ Usually this step is not required in a pipeline as the connection with Azure is 
     ```
 
 6. Moreover, you can laucnh automatically the VPN Connection and Proxy server using the VSCode task define in the file `.vscode/tasks.json` using the following keyboard shortcut:
-    Ctrl+Shift+P → Tasks: Run Task → Start VPN + Proxy
+    Open the Command Palette: `Ctrl+Shift+P` 
+    Type `Tasks: Run Task`
+    Select `Start VPN + Proxy`
 
 7. Once the VPN connection is established and the proxy server is running you can launch the browser on Widnows or MacOs with the following argument for the Chrome based browser:
 
