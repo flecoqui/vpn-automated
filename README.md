@@ -392,7 +392,7 @@ Usually this step is not required in a pipeline as the connection with Azure is 
     ```
     
     Below the architecture diagram:
-    ![Private Infrastructure](./diagrams/private-custom-vpn.png)
+    ![Private Infrastructure](./diagrams/custom-vpn-architecture.png)
 
 
 8. Once all the connections services are running, you can run the internal test using the following command:
@@ -422,7 +422,7 @@ From this repository, you can deploy a basic infrastructure with:
 
 
 The first deployment exposing public endpoints is cost effective (~ $0.37/day), but not secure enough as it exposes public endpoints
-![Custom Private VPN Cost](./diagrams/cost-vpn-custom-private.png)
+![Custom Private VPN Cost](./diagrams/cost-vpn-public.png)
 
 The second deployment using Azure VPN Gateway and DNS Resolver is fully secure with only private endpoints and ready for a production deployment. Moreover, for this deployment the Azure Container Registry sku changes from Basic to Premium, sku which supports private endpoint.
 
@@ -438,4 +438,4 @@ The cost of the VPN based infrastructure is approximately $2.12/day (3.99 - 0.37
 
 With this configuration you save almost $10/day ($300/month)
 
-![Public VPN Cost](./diagrams/cost-vpn-public.png)
+![Public VPN Cost](./diagrams/cost-vpn-custom-private.png)
