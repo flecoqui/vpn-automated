@@ -217,7 +217,7 @@ Usually this step is not required in a pipeline as the connection with Azure is 
         output resourceGroupName string = 'rgvpn${baseName}'
     ```
 
-#### Deploying Azure Key Vault, Azure Storage Account and Azure Container Registry with public endpoint
+## Deploying Azure Key Vault, Azure Storage Account and Azure Container Registry with public endpoint
 
 1. Once you are connected to your Azure subscription, you can now deploy an Azure Key Vault, Azure Storage Account and Azure Container Registry infrastructure associated with public endpoints.
 
@@ -252,7 +252,7 @@ Usually this step is not required in a pipeline as the connection with Azure is 
     Moreover, this script check whether the IP Addresses of all the resources are public IP address. 
  
 
-#### Removing the public resources
+## Removing the public resources
 
 1. When your tests are over, you can remove the infrastructure running the following commands:
 
@@ -261,7 +261,7 @@ Usually this step is not required in a pipeline as the connection with Azure is 
     ```
 
 
-#### Deploying Azure Key Vault, Azure Storage Account and Azure Container Registry with private endpoint through Azure VPN Gateway
+## Deploying Azure Key Vault, Azure Storage Account and Azure Container Registry with private endpoint through Azure VPN Gateway
 
 1. Once you are connected to your Azure subscription, you can now deploy an Azure Key Vault, Azure Storage Account and Azure Container Registry infrastructure connected to a VNET and associated with private endpoints and through an Azure VPN Gateway and DNS Resolver 
 
@@ -317,7 +317,7 @@ Usually this step is not required in a pipeline as the connection with Azure is 
     Moreover, this script check whether the IP Addresses of all the resources are private IP addresses.
 
 
-#### Removing the private resources
+## Removing the private resources
 
 1. When your tests are over, you can remove the infrastructure running the following commands:
 
@@ -325,7 +325,7 @@ Usually this step is not required in a pipeline as the connection with Azure is 
         vscode ➜ /workspaces/vpn-automated (main) $ ./infra/deploy-infra.sh   -a remove-private-vpn
     ```
 
-#### Deploying Azure Key Vault, Azure Storage Account and Azure Container Registry with private endpoint through a custom VPN Gateway
+## Deploying Azure Key Vault, Azure Storage Account and Azure Container Registry with private endpoint through a custom VPN Gateway
 
 1. For prodcution deployment it's recommended to use the Azure VPN Gateway and the DNS resolver. If you want to optimize the cost, you can use a custom VPN Gateway running on a small Virtual Machine. The user experience will almost the same. Once the infrastructure will be deployed, a VPN connection will be established from the dev container running in a dedicated terminal and a proxy server will be running in another terminal to allow the external applications (Browser running Azure Portal) to use this VPN connection. 
 
@@ -406,10 +406,36 @@ Usually this step is not required in a pipeline as the connection with Azure is 
     - Azure Container Registry: Push and Pull an image to the registry
     Moreover, this script check whether the IP Addresses of all the resources are private IP addresses.
 
-#### Removing the private resources associated with custom VPN Gateway
+## Removing the private resources associated with custom VPN Gateway
 
 1. When your tests are over, you can remove the infrastructure running the following commands:
 
     ```bash
         vscode ➜ /workspaces/vpn-automated (main) $ ./infra/deploy-infra.sh   -a remove-private-custom-vpn
     ```
+
+##  Cost Analysis
+From this repository, you can deploy a basic infrastructure with:
+- Azure Key Vault
+- Azure Storage Account
+- Azure Container Registry
+
+
+The first deployment exposing public endpoints is cost effective (~ $0.37/day), but not secure enough as it exposes public endpoints
+![Custom Private VPN Cost](./diagrams/cost-vpn-custom-private.png)
+
+The second deployment using Azure VPN Gateway and DNS Resolver is fully secure with only private endpoints and ready for a production deployment. Moreover, for this deployment the Azure Container Registry sku changes from Basic to Premium, sku which supports private endpoint.
+
+Cost per day: $14.25/day including $1.67 for the Premium Container Registry versus $0.17 for Basic sku. 
+
+The cost of the VPN based infrastructure is approximately $12.04/day (14.25 - 0.37 - 1.67 + 0.17)
+
+![Private VPN Cost](./diagrams/cost-vpn-private.png)
+
+The third deployment using a virtual machine hosting OpenVPN and Bind9 DNS resolver is more cost effective: $3.69/day including $1.67 for the Premium Container Registry versus $0.17 for Basic sku. 
+
+The cost of the VPN based infrastructure is approximately $2.12/day (3.99 - 0.37 - 1.67 + 0.17)
+
+With this configuration you save almost $10/day ($300/month)
+
+![Public VPN Cost](./diagrams/cost-vpn-public.png)
