@@ -436,6 +436,6 @@ The third deployment using a virtual machine hosting OpenVPN and Bind9 DNS resol
 
 The cost of the VPN based infrastructure is approximately $2.12/day (3.99 - 0.37 - 1.67 + 0.17)
 
-With this configuration you save almost $10/day ($300/month)
+With this configuration you save almost $10/day ($300/month). Although, this configuration is not recommended for Production deployment, it's sufficient for dev, test and staging deployment.
 
 ![Public VPN Cost](./diagrams/cost-vpn-custom-private.png)
