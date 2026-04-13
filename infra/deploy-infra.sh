@@ -543,6 +543,19 @@ isPrivateIP() {
     ip=$(dig +short "${hostname}" 2>/dev/null | grep -E '^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$' | tail -1)
     [ -n "$ip" ] && echo "$ip" | grep -qE '^(10\.|172\.(1[6-9]|2[0-9]|3[0-1])\.|192\.168\.)' && echo "true" || echo "false"
 }
+##############################################################################
+#- checkPrivateDNSResolution
+##############################################################################
+checkPrivateDNSResolution() {
+    h=$1
+    s=$2
+    printProgress "Checking DNS resolution for ${s} hostname: ${h}"
+    printProgress "DNS resolution result for ${h}: $(dig +short "${h}")"
+    if [ "$(isPrivateIP "${h}")" = "false" ]; then
+        printError "VPN connection required before configuring private Key vault, Storage and Registry, since the ${s} is not behind private endpoint. Please connect to the VPN and run the script again to configure private Key vault, Storage and Registry."
+        exit 1
+    fi
+}
 
 ##############################################################################
 #- getCurrentObjectId
@@ -1274,9 +1287,9 @@ if [ "${ACTION}" = "deploy-private-custom-vpn" ] ; then
         --source-port-ranges '*' \
         --destination-address-prefixes '${AZURE_VPN_GATEWAY_PRIVATE_IP}' \
         --destination-port-ranges 22 \
-        --description \"Allow SSH inbound\""
+        --description \"Allow SSH inbound\"  --output none"
     printProgress "$cmd"
-    eval "$cmd"
+    eval "$cmd" 2> /dev/null 
     checkError
         
     printProgress "Waiting for SSH to become available on ${AZURE_VPN_GATEWAY_PUBLIC_IP}..."
@@ -1362,9 +1375,9 @@ if [ "${ACTION}" = "deploy-private-custom-vpn" ] ; then
         --source-port-ranges '*' \
         --destination-address-prefixes '${AZURE_VPN_GATEWAY_PRIVATE_IP}' \
         --destination-port-ranges 1194 \
-        --description \"Allow VPN inbound\""
+        --description \"Allow VPN inbound\"  --output none"
     printProgress "$cmd"
-    eval "$cmd"
+    eval "$cmd" 2> /dev/null
     checkError
 
     printMessage "OpenVPN provisioning complete."
@@ -1392,6 +1405,7 @@ if [ "${ACTION}" = "configure-private-vpn" ]  || [ "${ACTION}" = "configure-priv
     VISIBILITY="pri"
     RESOURCE_GROUP_NAME=$(getVPNResourceGroupName "${AZURE_ENVIRONMENT}" "${VISIBILITY}" "${AZURE_SUFFIX}")
     DEFAULT_DEPLOYMENT_PREFIX="${AZURE_ENVIRONMENT}${VISIBILITY}${AZURE_SUFFIX}"
+    CLIENT_IP_ADDRESS=$(curl -s https://ifconfig.me)
 
     setAzureResourceNames ${AZURE_ENVIRONMENT} "${VISIBILITY}" "${AZURE_SUFFIX}" "${RESOURCE_GROUP_NAME}"
     DEPLOY_NAME=$(getLatestDeploymentNameInResourceGroup ${RESOURCE_GROUP_NAME} "${DEFAULT_DEPLOYMENT_PREFIX}")
@@ -1402,22 +1416,79 @@ if [ "${ACTION}" = "configure-private-vpn" ]  || [ "${ACTION}" = "configure-priv
         printProgress "Installing 'dig' command line tool"
         installdig
     fi      
-    h=$(getHostname $AZURE_STORAGE_BLOB_URI)
-    printProgress "Checking DNS resolution for Blob API hostname: ${h}"
-    printProgress "DNS resolution result for ${h}: $(dig +short "${h}")"
-    if [ "$(isPrivateIP $(getHostname $AZURE_STORAGE_BLOB_URI))" = "false" ]; then
-        printError "VPN connection required before configuring private Key vault, Storage and Registry, since the storage account is not behind private endpoint. Please connect to the VPN and run the script again to configure private Key vault, Storage and Registry."
-        exit 1
+    if [ "${ACTION}" = "configure-private-custom-vpn" ] ; then
+        printProgress "Ensure Network Security Group rule for SSH is still present..."
+        cmd="az network nsg rule create \
+            --resource-group ${RESOURCE_GROUP_NAME} \
+            --nsg-name ${AZURE_VNET_NAME}-gateway-nsg \
+            --name AllowSSH \
+            --priority 100 \
+            --direction Inbound \
+            --access Allow \
+            --protocol Tcp \
+            --source-address-prefixes '${CLIENT_IP_ADDRESS}' \
+            --source-port-ranges '*' \
+            --destination-address-prefixes '${AZURE_VPN_GATEWAY_PRIVATE_IP}' \
+            --destination-port-ranges 22 \
+            --description \"Allow SSH inbound\"  --output none"
+        printProgress "$cmd"
+        eval "$cmd" 2> /dev/null 
+        checkError
+
+        printProgress "Ensure Network Security Group rule for VPN is still present..."
+        cmd="az network nsg rule create \
+            --resource-group ${RESOURCE_GROUP_NAME} \
+            --nsg-name ${AZURE_VNET_NAME}-gateway-nsg \
+            --name AllowVPN \
+            --priority 101 \
+            --direction Inbound \
+            --access Allow \
+            --protocol Udp \
+            --source-address-prefixes '${CLIENT_IP_ADDRESS}' \
+            --source-port-ranges '*' \
+            --destination-address-prefixes '${AZURE_VPN_GATEWAY_PRIVATE_IP}' \
+            --destination-port-ranges 1194 \
+            --description \"Allow VPN inbound\"  --output none"
+        printProgress "$cmd"
+        eval "$cmd" 2> /dev/null
+        checkError
+
+        printProgress "Restarting bind9 on VM Gateway in case the VM gateway have been stopped..."
+        cmd="ssh -i ~/.ssh/vm-gateway -o StrictHostKeyChecking=no \
+            azureuser@${AZURE_VPN_GATEWAY_PUBLIC_IP} \
+            \"sudo systemctl restart bind9\""
+        printProgress "$cmd"
+        eval "$cmd"
+        checkError
+
+        printProgress "Restarting openVPN on VM Gateway..."
+        cmd="ssh -i ~/.ssh/vm-gateway -o StrictHostKeyChecking=no \
+            azureuser@${AZURE_VPN_GATEWAY_PUBLIC_IP} \
+            \"sudo systemctl restart openvpn\""
+        printProgress "$cmd"
+        eval "$cmd"
+        checkError
+
+        printProgress "Restarting named on VM Gateway in case the VM gateway have been stopped..."
+        cmd="ssh -i ~/.ssh/vm-gateway -o StrictHostKeyChecking=no \
+            azureuser@${AZURE_VPN_GATEWAY_PUBLIC_IP} \
+            \"sudo systemctl restart named\""
+        printProgress "$cmd"
+        eval "$cmd"
+        checkError
     fi
+    h=$(getHostname $AZURE_STORAGE_BLOB_URI)
+    checkPrivateDNSResolution ${h} "Azure Storage Blob"
+
+    h=$(getHostname $AZURE_KEY_VAULT_URI)
+    checkPrivateDNSResolution ${h} "Azure Key Vault"
+
+    h=$AZURE_ACR_LOGIN_SERVER
+    checkPrivateDNSResolution ${h} "Azure Container Registry"
 
     printProgress "Configure private Key vault, Storage and Registry in resource group '${RESOURCE_GROUP_NAME}'"    
-    CLIENT_IP_ADDRESS=$(curl -s https://ifconfig.me)
-    OBJECT_ID=$(getCurrentObjectId)
-    if [ -z "${OBJECT_ID}" ] || [ "${OBJECT_ID}" = "null" ]; then
-        printError "Cannot get current user Object Id"
-        exit 1
-    fi    
-    OBJECT_TYPE=$(getCurrentObjectType)
+
+
 
     printProgress "Testing access to Key Vault: ${AZURE_KEY_VAULT_NAME}"
     updateSecretInKeyVault ${AZURE_KEY_VAULT_NAME} "testsecret" "testsecretvalue" true

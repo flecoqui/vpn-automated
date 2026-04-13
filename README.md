@@ -215,7 +215,6 @@ Usually this step is not required in a pipeline as the connection with Azure is 
         output dnsDelegationSubNetName string = 'DNSDelegationSubnet'
         output baseName string = baseName
         output resourceGroupName string = 'rgvpn${baseName}'
-
     ```
 
 #### Deploying Azure Key Vault, Azure Storage Account and Azure Container Registry with public endpoint
@@ -253,7 +252,7 @@ Usually this step is not required in a pipeline as the connection with Azure is 
     Moreover, this script check whether the IP Addresses of all the resources are public IP address. 
  
 
-##### Removing the public resources
+#### Removing the public resources
 
 1. When your tests are over, you can remove the infrastructure running the following commands:
 
@@ -318,7 +317,7 @@ Usually this step is not required in a pipeline as the connection with Azure is 
     Moreover, this script check whether the IP Addresses of all the resources are private IP addresses.
 
 
-##### Removing the private resources
+#### Removing the private resources
 
 1. When your tests are over, you can remove the infrastructure running the following commands:
 
@@ -373,7 +372,7 @@ Usually this step is not required in a pipeline as the connection with Azure is 
     Type `Tasks: Run Task`
     Select `Start VPN + Proxy`
 
-7. Once the VPN connection is established and the proxy server is running you can launch the browser on Widnows or MacOs with the following argument for the Chrome based browser:
+7. Once the VPN connection is established and the proxy server is running you can launch the browser on Windows or MacOs with the following argument for the Chrome based browser:
 
     ```bash
        --proxy-server="socks5://localhost:1080"
@@ -391,6 +390,9 @@ Usually this step is not required in a pipeline as the connection with Azure is 
     ```bash
         "C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe" --proxy-server="socks5://localhost:1080" --user-data-dir="%TEMP%\edge-vpn-profile"
     ```
+    
+    Below the architecture diagram:
+    ![Private Infrastructure](./diagrams/private-custom-vpn.png)
 
 
 8. Once all the connections services are running, you can run the internal test using the following command:
@@ -404,7 +406,7 @@ Usually this step is not required in a pipeline as the connection with Azure is 
     - Azure Container Registry: Push and Pull an image to the registry
     Moreover, this script check whether the IP Addresses of all the resources are private IP addresses.
 
-##### Removing the private resources
+#### Removing the private resources associated with custom VPN Gateway
 
 1. When your tests are over, you can remove the infrastructure running the following commands:
 
