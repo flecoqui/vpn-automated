@@ -7,7 +7,8 @@
 #                Will be the EasyRSA Common Name and output filename.
 #
 # Output: /etc/openvpn/clients/<client-name>.ovpn
-set -euo pipefail
+set -eu
+set -o pipefail 2>/dev/null || true
 
 EASYRSA_DIR="/etc/openvpn/easy-rsa"
 PKI_DIR="${EASYRSA_DIR}/pki"

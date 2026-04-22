@@ -1,0 +1,9 @@
+# Normalize line endings
+* text=auto
+
+# Force LF for scripts and config files
+*.sh text eol=lf
+*.env text eol=lf
+*.ovpn text eol=lf
+*.bicep text eol=lf
+*.csv text eol=lf
