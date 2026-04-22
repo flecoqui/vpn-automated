@@ -394,7 +394,12 @@ Usually this step is not required in a pipeline as the connection with Azure is 
     Below the architecture diagram:
     ![Private Infrastructure](./diagrams/custom-vpn-architecture.png)
 
+    If you face any issue using the Browsers, it's oftentimes related to port forward in VS Code. Check whether the Forwarded Address is green in the 'PORTS' tab in VS code, you can also test the proxy using the curl command line below:
 
+    ```bash
+        curl --socks5 localhost:1080 https://www.bing.com  
+    ```
+    
 8. Once all the connections services are running, you can run the internal test using the following command:
 
     ```bash
