@@ -360,6 +360,10 @@ Usually this step is not required in a pipeline as the connection with Azure is 
     ```bash
         vscode ➜ /workspaces/vpn-automated (main) $ sudo openvpn --config client.ovpn
     ```
+**Note:**
+When the infrastructure is deployed, your local IP address is the only IP address supported for the connection to the Virtual Machine running the Open VPN server. If a VPN client is associated with another local IP address to forget to update the inbound security rule 'AllowVPN' in the network security group called 'vnetdevpriXXXX-gateway-nsg' and add your local IP address or your local IP addresses range:
+For instance:  
+    ![Network Security Group - VPN](./diagrams/nsg-vpn.png)
 
 5. You can also launch a proxy server in your devcontainer to allow the external appication running on Windows or MAcOS to use this server to reach the resources connected to the isolated virtual network, running the following command:
 
